@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"D:\\\\Projects\\\\networkdetection\\\\networkdetection\" -Recurse)",
+      "Bash(Select-Object -First 100)",
+      "Bash(Format-Table -Property FullName, PSIsContainer -AutoSize)"
+    ]
+  }
+}
