@@ -36,16 +36,24 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_PATH = os.path.join(CURRENT_DIR, "..", "binarymodels", "rf_model_v1.pkl")
-SCALER_PATH = os.path.join(CURRENT_DIR, "..", "models", "scaler.pkl")
+sys.path.insert(0, CURRENT_DIR)
 sys.path.append(os.path.join(CURRENT_DIR, "utils"))
+
+from model_registry import MODEL_REGISTRY, DEFAULT_MODEL
+
+_default_entry = MODEL_REGISTRY[DEFAULT_MODEL]
+SCALER_PATH = _default_entry["scaler_path"]
 
 # Utils Import
 try:
     from firewall_manager import block_ip
-    from db_manager import log_attack
+    from db_manager import log_attack, log_heartbeat, log_pipeline_event
 except ImportError:
     def log_attack(*_args, **_kwargs):
+        pass
+    def log_heartbeat(*_args, **_kwargs):
+        pass
+    def log_pipeline_event(*_args, **_kwargs):
         pass
 
 # ---------------------------------------------------------------------------
@@ -872,7 +880,9 @@ def feature_extraction_and_predict():
                 "dst_ip": dst_ips.iloc[idx] if (dst_ips is not None and idx < len(dst_ips)) else "0.0.0.0",
                 "features": feature_dict,
                 "feature_count": len(feature_dict),
-                "producer_id": "live_bridge_v1_20f",
+                "producer_id": "live_bridge_v2",
+                "schema_version": "v2",
+                "extraction_method": "cli",
             }
             message_json = json.dumps(kafka_message, default=str)
             KAFKA_PRODUCER.produce(
@@ -1230,42 +1240,10 @@ def generate_dummy_features(packet_count: int = 1) -> pd.DataFrame:
     return pd.DataFrame(dummy_data)
 
 
-def main_loop():
-    global KAFKA_PRODUCER
-    
-    print(f"\n📡 Ağ Dinleniyor: {INTERFACE}")
-    print(f"📤 Kafka Topic: {KAFKA_TOPIC}")
-    print("⏹️  Durdurmak için CTRL+C yapın...\n")
-    
-    iteration_count = 0
-    total_messages_sent = 0
+def _producer_heartbeat_worker(stop_event: threading.Event, interval: int = 10):
+    while not stop_event.wait(interval):
+        log_heartbeat("producer", "alive")
 
-    while True:
-        try:
-            print("⏳ Paket toplanıyor...", end="\r")
-            packets = sniff(iface=INTERFACE, timeout=4)
-            if len(packets) > 0:
-                wrpcap(TEMP_PCAP, packets)
-                feature_extraction_and_predict()
-                iteration_count += 1
-            else:
-                print(f"⚠️ 0 Paket! '{INTERFACE}' ismini kontrol et.        ", end="\r")
-
-            # Periodic status update
-            if iteration_count > 0 and iteration_count % 10 == 0:
-                print(f"📊 [Producer Stats] {iteration_count} batch gönderildi ({KAFKA_TOPIC})")
-
-        except KeyboardInterrupt:
-            print("\n🛑 Sistem kullanıcı tarafından durduruldu.")
-            # Kafka Producer'ı temiz kapat
-            if KAFKA_PRODUCER is not None:
-                print("⏳ Kafka Producer kapatılıyor...")
-                KAFKA_PRODUCER.flush(timeout=5)
-                print("✅ Kafka Producer kapatıldı.")
-            break
-        except Exception as e:
-            print(f"⚠️ Ana döngü hatası: {e}")
-            time.sleep(1)
 
 def main_loop():
     global KAFKA_PRODUCER
@@ -1273,6 +1251,10 @@ def main_loop():
     print(f"\n📡 Ağ Dinleniyor: {INTERFACE}")
     print(f"📤 Kafka Topic: {KAFKA_TOPIC}")
     print("⏹️  Durdurmak için CTRL+C yapın...\n")
+
+    _hb_stop = threading.Event()
+    _hb_thread = threading.Thread(target=_producer_heartbeat_worker, args=(_hb_stop,), daemon=True)
+    _hb_thread.start()
 
     packet_buffer = []
     buffered_windows = 0
@@ -1329,6 +1311,7 @@ def main_loop():
                 last_stats_window = PRODUCER_STATS["capture_windows"]
 
         except KeyboardInterrupt:
+            _hb_stop.set()
             print("\n🛑 Sistem kullanıcı tarafından durduruldu.")
             if KAFKA_PRODUCER is not None:
                 print("⏳ Kafka Producer kapatılıyor...")
