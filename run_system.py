@@ -7,9 +7,11 @@ Orchestrates Docker, Kafka Consumer, Producer, and Dashboard in separate termina
 import os
 import sys
 import time
+import socket
 import platform
 import subprocess
 import json
+from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------------------
 # ANSI COLORS
@@ -359,12 +361,133 @@ def print_system_status(services):
     print(f"{CYAN}Bu pencereyi kapatabilirsiniz (servisler çalışmaya devam eder){RESET}\n")
 
 
+@dataclass
+class _CheckResult:
+    ok: bool
+    message: str
+    fix_hint: str = ""
+
+
+def _check_docker_installed() -> _CheckResult:
+    try:
+        r = subprocess.run(["docker", "--version"], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            return _CheckResult(True, "Docker installed")
+        return _CheckResult(False, "Docker returned non-zero", "Install Docker Desktop from https://docker.com")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return _CheckResult(False, "Docker not found in PATH", "Install Docker Desktop and restart this terminal")
+
+
+def _check_kafka_port() -> _CheckResult:
+    try:
+        with socket.create_connection(("127.0.0.1", 9092), timeout=3):
+            return _CheckResult(True, "Kafka port 9092 reachable")
+    except OSError:
+        return _CheckResult(
+            False,
+            "Cannot connect to 127.0.0.1:9092",
+            "Start Kafka first: docker-compose up -d",
+        )
+
+
+def _check_model_files() -> _CheckResult:
+    try:
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
+        from model_registry import MODEL_REGISTRY
+        missing = [
+            f"{key}: {entry['artifact_path']}"
+            for key, entry in MODEL_REGISTRY.items()
+            if entry["live_supported"] and not os.path.exists(entry["artifact_path"])
+        ]
+        if missing:
+            return _CheckResult(
+                False,
+                f"Missing model files: {missing}",
+                "Train or download models into the models/ directory",
+            )
+        return _CheckResult(True, "All live-supported model files present")
+    except ImportError as exc:
+        return _CheckResult(False, f"model_registry import failed: {exc}", "Check src/model_registry.py")
+
+
+def _check_active_model() -> _CheckResult:
+    active_path = os.path.join(PROJECT_ROOT, "data", "active_model.txt")
+    if not os.path.exists(active_path):
+        return _CheckResult(True, "active_model.txt absent — will default to Random Forest")
+    try:
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
+        from model_registry import MODEL_REGISTRY
+        with open(active_path) as f:
+            key = f.read().strip()
+        if key not in MODEL_REGISTRY:
+            return _CheckResult(
+                False,
+                f"active_model.txt contains unknown key: '{key}'",
+                f"Valid keys: {list(MODEL_REGISTRY.keys())}",
+            )
+        return _CheckResult(True, f"Active model: {key}")
+    except Exception as exc:
+        return _CheckResult(False, f"active_model.txt check failed: {exc}", "")
+
+
+def _check_python_imports() -> _CheckResult:
+    missing = []
+    for pkg, import_name in [
+        ("confluent-kafka", "confluent_kafka"),
+        ("scikit-learn", "sklearn"),
+        ("streamlit", "streamlit"),
+        ("scapy", "scapy"),
+    ]:
+        try:
+            __import__(import_name)
+        except ImportError:
+            missing.append(pkg)
+    if missing:
+        return _CheckResult(
+            False,
+            f"Missing Python packages: {missing}",
+            f"pip install {' '.join(missing)}",
+        )
+    return _CheckResult(True, "Required Python packages importable")
+
+
+def preflight_checks():
+    """Run all startup checks and exit with a clear message on the first failure."""
+    print(f"\n{CYAN}{'─'*60}{RESET}")
+    print(f"{BOLD}🔍 Running preflight checks...{RESET}")
+
+    checks = [
+        ("Docker installed", _check_docker_installed),
+        ("Kafka port 9092", _check_kafka_port),
+        ("Model files", _check_model_files),
+        ("Active model valid", _check_active_model),
+        ("Python imports", _check_python_imports),
+    ]
+
+    all_ok = True
+    for label, fn in checks:
+        result = fn()
+        status = f"{GREEN}✅{RESET}" if result.ok else f"{RED}❌{RESET}"
+        print(f"  {status} {label}: {result.message}")
+        if not result.ok:
+            if result.fix_hint:
+                print(f"     {YELLOW}Fix: {result.fix_hint}{RESET}")
+            all_ok = False
+
+    if not all_ok:
+        print(f"\n{RED}[PREFLIGHT FAIL] One or more checks failed. Correct the issues above and retry.{RESET}\n")
+        sys.exit(1)
+
+    print(f"{GREEN}✅ All preflight checks passed.{RESET}\n")
+
+
 def main():
     """Main orchestration function."""
     try:
         print_banner()
         check_os()
         print_runtime_context()
+        preflight_checks()
         ensure_single_stack()
         start_docker_infrastructure()
         services = launch_services()

@@ -1,12 +1,12 @@
-numpy
-pandas
-scikit-learn
-tensorflow
-scapy
-streamlit
+numpy==1.26.4
+pandas==2.3.3
+scikit-learn==1.7.2
+tensorflow==2.15.0
+scapy==2.6.1
+streamlit==1.52.0
+joblib==1.5.2
 matplotlib
 seaborn
-joblib
 plotly
 requests
 folium
@@ -15,5 +15,5 @@ streamlit-aggrid
 reportlab
 python-dotenv
 cicflowmeter
-confluent-kafka
+confluent-kafka==2.14.0
 streamlit-autorefresh

@@ -68,10 +68,16 @@ if PARENT_DIR not in sys.path:
     sys.path.append(PARENT_DIR)
 
 try:
-    from utils.db_manager import fetch_logs
+    from utils.db_manager import fetch_logs, log_heartbeat, fetch_recent_events, get_service_health
     from utils.firewall_manager import block_ip, list_blocked_ips, unblock_ip
 except ImportError:
     def fetch_logs():
+        return pd.DataFrame()
+    def log_heartbeat(*args, **kwargs):
+        pass
+    def fetch_recent_events(limit=50):
+        return pd.DataFrame()
+    def get_service_health():
         return pd.DataFrame()
     def block_ip(ip):
         return False
@@ -113,13 +119,17 @@ RISK_LEVELS = {
     4: {"name": "HIGH",     "color": "#FFA500", "emoji": "🟠"},
     5: {"name": "CRITICAL", "color": "#FF4B4B", "emoji": "🔴"},
 }
-MODEL_MAPPING = {
-    "Random Forest": "rf_3class_model.pkl",
-    "Decision Tree": "dt_model.pkl",
-    "XGBoost":       "xgboost_model.pkl",
-    "LSTM":          "lstm_model.keras",
-    "BiLSTM":        "bilstm_model.keras",
-}
+try:
+    from model_registry import MODEL_REGISTRY as _MODEL_REG
+    MODEL_MAPPING = {k: os.path.basename(v["artifact_path"]) for k, v in _MODEL_REG.items()}
+except ImportError:
+    MODEL_MAPPING = {
+        "Random Forest": "rf_3class_model.pkl",
+        "Decision Tree": "dt_3class_model.pkl",
+        "XGBoost":       "xgb_3class_model.pkl",
+        "LSTM":          "lstm_model.keras",
+        "BiLSTM":        "bilstm_model.keras",
+    }
 
 # ---------------------------------------------------------------------------
 # PAGE CONFIG
@@ -141,6 +151,8 @@ if st.session_state.live_mode:
     count = st_autorefresh(interval=st.session_state.refresh_interval * 1000, limit=None, key="soc_autorefresh")
 else:
     count = 0
+
+log_heartbeat("dashboard", "alive")
 
 # ---------------------------------------------------------------------------
 # DARK-MODE CSS
@@ -1419,24 +1431,36 @@ logs_df = filter_dataframe(df_logs_full, time_window)
 # 5. Model Status Badge
 st.sidebar.subheader("🧠 Active AI Model")
 os.makedirs(os.path.dirname(ACTIVE_MODEL_PATH), exist_ok=True)
+_default_model_key = "Random Forest"
 try:
     if os.path.exists(ACTIVE_MODEL_PATH):
         with open(ACTIVE_MODEL_PATH) as f:
-            current_model_file = f.read().strip()
-        current_model = next((k for k, v in MODEL_MAPPING.items() if v == current_model_file), "BiLSTM")
+            _stored = f.read().strip()
+        # Support both registry key names and legacy filenames
+        if _stored in MODEL_MAPPING:
+            current_model = _stored
+        else:
+            current_model = next((k for k, v in MODEL_MAPPING.items() if v == _stored), _default_model_key)
     else:
-        current_model = "BiLSTM"
+        current_model = _default_model_key
         with open(ACTIVE_MODEL_PATH, "w") as f:
-            f.write(MODEL_MAPPING["BiLSTM"])
+            f.write(_default_model_key)
 except Exception:
-    current_model = "BiLSTM"
+    current_model = _default_model_key
 
-selected_model = st.sidebar.selectbox("Select Model", list(MODEL_MAPPING.keys()), index=list(MODEL_MAPPING.keys()).index(current_model), key="model_selector", label_visibility="collapsed")
+_model_keys = list(MODEL_MAPPING.keys())
+selected_model = st.sidebar.selectbox(
+    "Select Model",
+    _model_keys,
+    index=_model_keys.index(current_model) if current_model in _model_keys else 0,
+    key="model_selector",
+    label_visibility="collapsed",
+)
 if selected_model != current_model:
     try:
         with open(ACTIVE_MODEL_PATH, "w") as f:
-            f.write(MODEL_MAPPING[selected_model])
-    except Exception as e:
+            f.write(selected_model)  # write registry key name, not filename
+    except Exception:
         pass
 
 st.sidebar.markdown(f"""

@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"D:\\\\Projects\\\\networkdetection\\\\networkdetection\" -Recurse)",
+      "Bash(Select-Object -First 100)",
+      "Bash(Format-Table -Property FullName, PSIsContainer -AutoSize)",
+      "Bash(grep -E \"\\\\.\\(env|cfg|conf|yml|yaml|toml\\)$\")",
+      "Bash(python -c \"from src.model_registry import MODEL_REGISTRY, LIVE_MODELS, DEFAULT_MODEL; print\\('Keys:', list\\(MODEL_REGISTRY.keys\\(\\)\\)\\); print\\('Live:', list\\(LIVE_MODELS.keys\\(\\)\\)\\); print\\('Default:', DEFAULT_MODEL\\)\")",
+      "Bash(python -c \"import sklearn; import warnings; warnings.filterwarnings\\('error'\\); import joblib; scaler = joblib.load\\('models/scaler_ml_3class.pkl'\\); print\\('sklearn runtime:', sklearn.__version__\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import tensorflow; print\\('tensorflow', tensorflow.__version__\\)\")",
+      "Bash(python -m pytest test/test_model_registry.py test/test_csv_schema.py -v)",
+      "Bash(pip install *)",
+      "Bash(python -m pytest test/test_model_registry.py test/test_csv_schema.py test/test_no_dummy_on_failure.py -v)",
+      "Bash(python -m pytest test/test_consumer_output.py -v)",
+      "Bash(python -m pytest test/test_consumer_output.py test/test_model_registry.py -v)",
+      "Bash(python -m pytest test/test_model_registry.py test/test_consumer_output.py test/test_csv_schema.py test/test_no_dummy_on_failure.py test/test_producer_extraction.py -v)",
+      "Bash(python -m pytest test/test_model_registry.py test/test_consumer_output.py test/test_csv_schema.py test/test_no_dummy_on_failure.py test/test_producer_extraction.py -v --tb=short)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}

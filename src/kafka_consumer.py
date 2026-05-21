@@ -9,6 +9,7 @@ import sys
 import json
 import time
 import shutil
+import threading
 import joblib
 import pandas as pd
 import numpy as np
@@ -20,23 +21,27 @@ from confluent_kafka import Consumer, KafkaError
 # ---------------------------------------------------------------------------
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
-MODEL_PATH = os.path.join(PROJECT_ROOT, "models", "rf_3class_model.pkl")  # Default, will be overridden
-SCALER_PATH = os.path.join(PROJECT_ROOT, "models", "scaler.pkl")
-SCALER_LSTM_PATH = os.path.join(PROJECT_ROOT, "models", "scaler_lstm.pkl")  # For LSTM models
 CSV_OUTPUT_PATH = os.path.join(PROJECT_ROOT, "data", "live_captured_traffic.csv")
 ACTIVE_MODEL_CONFIG = os.path.join(PROJECT_ROOT, "data", "active_model.txt")
 
-# Add utils to path for database logging
+# Add src and utils to path
+sys.path.insert(0, CURRENT_DIR)
 sys.path.append(os.path.join(CURRENT_DIR, "utils"))
 
+from model_registry import MODEL_REGISTRY, LIVE_MODELS, DEFAULT_MODEL
+
 try:
-    from db_manager import log_attack
+    from db_manager import log_attack, log_heartbeat, log_pipeline_event
     from firewall_manager import block_ip
     DB_AVAILABLE = True
 except ImportError:
     print("⚠️  WARNING: db_manager or firewall_manager not found. Logging disabled.")
     DB_AVAILABLE = False
     def log_attack(*args, **kwargs):
+        pass
+    def log_heartbeat(*args, **kwargs):
+        pass
+    def log_pipeline_event(*args, **kwargs):
         pass
     def block_ip(*args, **kwargs):
         pass
@@ -64,20 +69,25 @@ CSV_HEADER_COLUMNS = [
     "Src_IP",
     "Dst_IP",
     "Predicted_Label",
+    "Class_Name",
     "Confidence_Score",
+    "Prob_Benign",
+    "Prob_Volumetric",
+    "Prob_Semantic",
     "Model_Used",
+    "Model_Type",
+    "Producer_ID",
+    "Feature_Count",
+    "Schema_Adjusted",
     "Processing_Time_Ms",
+    "Action",
 ]
-MODEL_ALIASES = {
-    "rf_model_v1.pkl": "rf_3class_model.pkl",
-}
-
 # ---------------------------------------------------------------------------
 # GLOBAL MODEL & SCALER
 # ---------------------------------------------------------------------------
 MODEL = None
 SCALER = None
-CURRENT_MODEL_NAME = "rf_3class_model.pkl"  # Track currently loaded model
+CURRENT_MODEL_NAME = DEFAULT_MODEL
 CURRENT_MODEL_TYPE = "sklearn"  # 'sklearn' or 'keras'
 LAST_CONFIG_CHECK = 0  # Timestamp of last config file check
 CONFIG_CHECK_INTERVAL = 5  # Check config file every 5 seconds
@@ -100,12 +110,7 @@ def get_expected_feature_names():
     return []
 
 
-def normalize_model_filename(model_filename):
-    """Map legacy model names onto the canonical model files we want to use."""
-    normalized = MODEL_ALIASES.get(model_filename, model_filename)
-    if normalized != model_filename:
-        print(f"{YELLOW}⚠️  Redirecting model '{model_filename}' -> '{normalized}'{RESET}")
-    return normalized
+
 
 
 def initialize_csv_file():
@@ -135,111 +140,100 @@ def initialize_csv_file():
     print(f"{GREEN}✅ CSV output file initialized: {CSV_OUTPUT_PATH}{RESET}")
 
 
-def load_model_and_scaler(model_filename=None):
-    """Load the ML model and scaler dynamically based on model type.
-    
+_FILENAME_TO_REGISTRY_KEY = {
+    os.path.basename(v["artifact_path"]): k
+    for k, v in MODEL_REGISTRY.items()
+}
+
+
+def _resolve_registry_key(model_key_or_filename):
+    """Return a MODEL_REGISTRY key given either a registry key or a bare filename."""
+    if model_key_or_filename in MODEL_REGISTRY:
+        return model_key_or_filename
+    mapped = _FILENAME_TO_REGISTRY_KEY.get(model_key_or_filename)
+    if mapped:
+        print(f"{YELLOW}⚠️  Mapping filename '{model_key_or_filename}' → registry key '{mapped}'{RESET}")
+        return mapped
+    return None
+
+
+def load_model_and_scaler(model_key=None):
+    """Load the ML model and scaler from MODEL_REGISTRY.
+
     Args:
-        model_filename: Name of model file (e.g., 'xgboost_model.pkl'). If None, reads from config.
+        model_key: Registry key (e.g. 'Random Forest') or bare filename for
+                   backward compatibility. If None, reads from active_model.txt.
     """
     global MODEL, SCALER, CURRENT_MODEL_NAME, CURRENT_MODEL_TYPE
-    
-    # If no filename provided, read from config file
-    if model_filename is None:
+
+    if model_key is None:
         if os.path.exists(ACTIVE_MODEL_CONFIG):
             try:
-                with open(ACTIVE_MODEL_CONFIG, 'r') as f:
-                    model_filename = f.read().strip()
+                with open(ACTIVE_MODEL_CONFIG, "r") as f:
+                    model_key = f.read().strip()
             except Exception:
-                model_filename = "rf_3class_model.pkl"  # Fallback default
+                model_key = DEFAULT_MODEL
         else:
-            model_filename = "rf_3class_model.pkl"  # Default
-            # Create default config file
+            model_key = DEFAULT_MODEL
             os.makedirs(os.path.dirname(ACTIVE_MODEL_CONFIG), exist_ok=True)
             try:
-                with open(ACTIVE_MODEL_CONFIG, 'w') as f:
-                    f.write(model_filename)
+                with open(ACTIVE_MODEL_CONFIG, "w") as f:
+                    f.write(model_key)
             except Exception:
                 pass
 
-    model_filename = normalize_model_filename(model_filename)
-    
+    registry_key = _resolve_registry_key(model_key)
+    if registry_key is None:
+        print(f"{RED}❌ CRITICAL ERROR: '{model_key}' is not a known registry key or model filename.{RESET}")
+        print(f"   Known models: {list(MODEL_REGISTRY.keys())}")
+        sys.exit(1)
+
+    entry = MODEL_REGISTRY[registry_key]
+    model_path = entry["artifact_path"]
+    scaler_path = entry["scaler_path"]
+
     print(f"\n{CYAN}{'='*60}{RESET}")
     print(f"{BOLD}🔧 Loading ML Model & Scaler...{RESET}")
     print(f"{CYAN}{'='*60}{RESET}")
-    print(f"{CYAN}   Target Model: {model_filename}{RESET}")
-    
-    # Build model path
-    model_path = os.path.join(PROJECT_ROOT, "models", model_filename)
-    
-    # Check if model file exists
+    print(f"{CYAN}   Registry key: {registry_key}{RESET}")
+    print(f"{CYAN}   Artifact:     {model_path}{RESET}")
+    print(f"{CYAN}   Scaler:       {scaler_path}{RESET}")
+
     if not os.path.exists(model_path):
-        alt_model_path = os.path.join(PROJECT_ROOT, "binary_models", model_filename)
-        if os.path.exists(alt_model_path):
-            model_path = alt_model_path
-        else:
-            print(f"{RED}❌ CRITICAL ERROR: Model file not found!{RESET}")
-            print(f"   Expected path: {model_path} or {alt_model_path}")
-            print(f"   Available models in models/ directory:")
-            try:
-                model_files = [f for f in os.listdir(os.path.join(PROJECT_ROOT, "models")) 
-                              if f.endswith(('.pkl', '.keras', '.h5'))]
-                for mf in model_files:
-                    print(f"      - {mf}")
-            except Exception:
-                pass
-            sys.exit(1)
-    
-    # Determine model type based on file extension
-    is_keras_model = model_filename.endswith(('.keras', '.h5'))
-    
+        print(f"{RED}❌ CRITICAL ERROR: Model file not found: {model_path}{RESET}")
+        sys.exit(1)
+
+    is_keras_model = model_path.endswith((".keras", ".h5"))
+
     try:
         if is_keras_model:
-            # Load Keras/TensorFlow model
             try:
                 from tensorflow.keras.models import load_model as keras_load_model
             except ImportError:
-                print(f"{RED}❌ ERROR: TensorFlow not installed!{RESET}")
-                print(f"   Install with: pip install tensorflow")
+                print(f"{RED}❌ ERROR: TensorFlow not installed. pip install tensorflow{RESET}")
                 sys.exit(1)
-            
             MODEL = keras_load_model(model_path)
             CURRENT_MODEL_TYPE = "keras"
-            print(f"{GREEN}✅ Keras/LSTM Model loaded successfully{RESET}")
-            print(f"{CYAN}   Model type: LSTM/BiLSTM{RESET}")
-            
-            # Try to load LSTM scaler if available, otherwise use standard scaler
-            if os.path.exists(SCALER_LSTM_PATH):
-                SCALER = joblib.load(SCALER_LSTM_PATH)
-                print(f"{GREEN}✅ LSTM Scaler loaded{RESET}")
-            elif os.path.exists(SCALER_PATH):
-                SCALER = joblib.load(SCALER_PATH)
-                print(f"{GREEN}✅ Standard Scaler loaded{RESET}")
-            else:
-                print(f"{YELLOW}⚠️  WARNING: No scaler found, predictions may be inaccurate{RESET}")
-                SCALER = None
+            print(f"{GREEN}✅ Keras model loaded{RESET}")
         else:
-            # Load scikit-learn model (pkl)
             MODEL = joblib.load(model_path)
             CURRENT_MODEL_TYPE = "sklearn"
-            print(f"{GREEN}✅ Scikit-learn Model loaded successfully{RESET}")
-            print(f"{CYAN}   Model type: {type(MODEL).__name__}{RESET}")
-            
-            # Load standard scaler
-            if not os.path.exists(SCALER_PATH):
-                print(f"{RED}❌ CRITICAL ERROR: Scaler file not found!{RESET}")
-                print(f"   Expected path: {SCALER_PATH}")
-                sys.exit(1)
-            
-            SCALER = joblib.load(SCALER_PATH)
-            print(f"{GREEN}✅ StandardScaler loaded successfully{RESET}")
-        
-        CURRENT_MODEL_NAME = model_filename
+            print(f"{GREEN}✅ Scikit-learn model loaded ({type(MODEL).__name__}){RESET}")
+
+        if scaler_path and os.path.exists(scaler_path):
+            SCALER = joblib.load(scaler_path)
+            print(f"{GREEN}✅ Scaler loaded{RESET}")
+        else:
+            print(f"{YELLOW}⚠️  Scaler not found at {scaler_path} — predictions may be inaccurate{RESET}")
+            SCALER = None
+
+        CURRENT_MODEL_NAME = registry_key
         expected_feature_names = get_expected_feature_names()
         if expected_feature_names:
             print(f"{CYAN}   Features expected by scaler: {len(expected_feature_names)}{RESET}\n")
         else:
-            print(f"{YELLOW}   WARNING: scaler feature names are unavailable; schema checks will be limited{RESET}\n")
-        
+            print(f"{YELLOW}   WARNING: scaler has no feature_names_in_; schema checks limited{RESET}\n")
+
     except Exception as exc:
         print(f"{RED}❌ CRITICAL ERROR: Failed to load model/scaler!{RESET}")
         print(f"   Error: {exc}")
@@ -282,159 +276,6 @@ def create_consumer():
 
 def process_message(message_value):
     """
-    Process a single Kafka message: parse, predict, log.
-    
-    Args:
-        message_value: Raw message bytes from Kafka
-        
-    Returns:
-        bool: True if processing successful, False otherwise
-    """
-    start_time = time.time()
-    
-    try:
-        # 1. PARSE JSON MESSAGE
-        message_data = json.loads(message_value.decode('utf-8'))
-        
-        timestamp = message_data.get("timestamp", datetime.now().isoformat())
-        src_ip = message_data.get("src_ip", "Unknown")
-        dst_ip = message_data.get("dst_ip", "Unknown")
-        features_dict = message_data.get("features", {})
-        producer_id = message_data.get("producer_id", "unknown")
-        
-        # Validate feature count
-        if len(features_dict) != EXPECTED_FEATURE_COUNT:
-            print(f"{YELLOW}⚠️  WARNING: Expected {EXPECTED_FEATURE_COUNT} features, got {len(features_dict)}{RESET}")
-        
-        # 2. CONVERT FEATURES TO DATAFRAME
-        # Features dict has column names as keys, need to maintain order
-        features_df = pd.DataFrame([features_dict])
-        
-        # Align features to match exactly what the scaler/model expects
-        if hasattr(SCALER, 'feature_names_in_'):
-            expected_features = SCALER.feature_names_in_
-            # Reindex dataframe: keeps matching columns, adds missing ones with 0.0, drops extra ones
-            features_df = features_df.reindex(columns=expected_features, fill_value=0.0)
-        
-        # Handle any missing or extra columns (align with scaler expectations)
-        # The scaler was fitted on specific columns, so we need to match that order
-        try:
-            # 3. SCALE FEATURES
-            features_scaled = SCALER.transform(features_df)
-            features_scaled_df = pd.DataFrame(
-                features_scaled,
-                columns=features_df.columns,
-                index=features_df.index
-            )
-        except Exception as e:
-            print(f"{RED}⚠️  Scaling error: {e}{RESET}")
-            # Try with filling missing values
-            features_df = features_df.fillna(0)
-            features_scaled = SCALER.transform(features_df)
-            features_scaled_df = pd.DataFrame(
-                features_scaled,
-                columns=features_df.columns
-            )
-        
-        # 4. MAKE PREDICTION (handle different model types)
-        if CURRENT_MODEL_TYPE == "keras":
-            # LSTM models expect 3D input: (samples, timesteps, features)
-            # Reshape from (1, 78) to (1, 1, 78)
-            features_for_prediction = features_scaled.reshape((features_scaled.shape[0], 1, features_scaled.shape[1]))
-            
-            # Keras model returns probabilities directly
-            prediction_proba = MODEL.predict(features_for_prediction, verbose=0)[0]
-            
-            # For binary classification, threshold at 0.5
-            if len(prediction_proba) == 1:
-                # Single output neuron (sigmoid)
-                confidence_score = float(prediction_proba[0])
-                prediction = 1 if confidence_score > 0.5 else 0
-            else:
-                # Multiple output neurons (softmax) - take argmax
-                prediction = int(np.argmax(prediction_proba))
-                confidence_score = float(prediction_proba[prediction])
-        else:
-            # Scikit-learn models (RF, DT, XGB) use 2D input
-            prediction = MODEL.predict(features_scaled_df)[0]
-            
-            # Get confidence score (probability of attack)
-            try:
-                probabilities = MODEL.predict_proba(features_scaled_df)[0]
-                confidence_score = float(probabilities[1])  # Probability of class 1 (attack)
-            except AttributeError:
-                # Model doesn't support predict_proba
-                confidence_score = float(prediction)
-        
-        # 5. DETERMINE ACTION
-        is_attack = (prediction == 1)
-        processing_time_ms = (time.time() - start_time) * 1000
-        
-        # 6. LOG TO CSV
-        log_entry = {
-            "Timestamp": timestamp,
-            "Src_IP": src_ip,
-            "Dst_IP": dst_ip,
-            "Predicted_Label": int(prediction),
-            "Confidence_Score": round(confidence_score, 4),
-            "Model_Used": CURRENT_MODEL_NAME.replace('.pkl', '').replace('.keras', ''),
-            "Processing_Time_Ms": round(processing_time_ms, 2)
-        }
-        
-        # Append to CSV
-        log_df = pd.DataFrame([log_entry])
-        log_df.to_csv(CSV_OUTPUT_PATH, mode='a', header=False, index=False)
-        
-        # 7. LOG TO DATABASE (if available)
-        if DB_AVAILABLE:
-            if is_attack:
-                if src_ip not in WHITELIST_IPS and src_ip != "Unknown":
-                    log_attack(src_ip, "BLOCKED", f"Attack detected (confidence: {confidence_score:.2%})")
-                    # Optionally block IP
-                    # block_ip(src_ip)  # Uncomment to enable auto-blocking
-                else:
-                    log_attack(src_ip, "ALLOWED", f"Attack detected but whitelisted (confidence: {confidence_score:.2%})")
-            else:
-                # Optionally log normal traffic (commented to avoid DB bloat)
-                # log_attack(src_ip, "NORMAL", "Clean traffic")
-                pass
-        
-        # 8. UPDATE STATISTICS
-        STATS["total_processed"] += 1
-        if is_attack:
-            STATS["attacks_detected"] += 1
-        else:
-            STATS["clean_traffic"] += 1
-        
-        # 9. TERMINAL OUTPUT
-        current_time = datetime.now().strftime("%H:%M:%S")
-        
-        if is_attack:
-            print(f"{RED}{BOLD}🚨 [{current_time}] ALERT: ATTACK DETECTED!{RESET}")
-            print(f"{RED}   Source IP: {src_ip} → Destination: {dst_ip}{RESET}")
-            print(f"{RED}   Confidence: {confidence_score:.2%} | Processing: {processing_time_ms:.2f}ms{RESET}")
-            if src_ip in WHITELIST_IPS:
-                print(f"{YELLOW}   ⚠️  IP is whitelisted - not blocking{RESET}")
-        else:
-            print(f"{GREEN}✅ [{current_time}] Clean Traffic{RESET}", end="")
-            print(f"{GREEN} | {src_ip} → {dst_ip} | Confidence: {confidence_score:.2%} | {processing_time_ms:.2f}ms{RESET}")
-        
-        return True
-        
-    except json.JSONDecodeError as e:
-        print(f"{RED}⚠️  JSON parsing error: {e}{RESET}")
-        STATS["errors"] += 1
-        return False
-    except Exception as e:
-        print(f"{RED}⚠️  Processing error: {e}{RESET}")
-        import traceback
-        traceback.print_exc()
-        STATS["errors"] += 1
-        return False
-
-
-def process_message(message_value):
-    """
     Process a single Kafka message: parse, validate, predict, log.
 
     Args:
@@ -462,6 +303,7 @@ def process_message(message_value):
         expected_features = get_expected_feature_names()
         incoming_feature_names = list(features_dict.keys())
         features_df = pd.DataFrame([features_dict])
+        schema_adjusted = False
 
         if expected_features:
             missing_features = [col for col in expected_features if col not in features_dict]
@@ -477,6 +319,7 @@ def process_message(message_value):
                 return False
 
             if missing_features or extra_features:
+                schema_adjusted = True
                 STATS["schema_adjustments"] += 1
                 print(
                     f"{CYAN}ℹ️  Schema adjusted from {producer_id}: "
@@ -502,6 +345,11 @@ def process_message(message_value):
                 columns=features_df.columns,
             )
 
+        class_names = MODEL_REGISTRY.get(CURRENT_MODEL_NAME, {}).get(
+            "class_names", ["Benign", "Volumetric", "Semantic"]
+        )
+        prob_benign = prob_volumetric = prob_semantic = 0.0
+
         if CURRENT_MODEL_TYPE == "keras":
             features_for_prediction = features_scaled.reshape(
                 (features_scaled.shape[0], 1, features_scaled.shape[1])
@@ -514,35 +362,62 @@ def process_message(message_value):
             else:
                 prediction = int(np.argmax(prediction_proba))
                 confidence_score = float(prediction_proba[prediction])
+                if len(prediction_proba) >= 3:
+                    prob_benign, prob_volumetric, prob_semantic = (
+                        float(prediction_proba[0]),
+                        float(prediction_proba[1]),
+                        float(prediction_proba[2]),
+                    )
         else:
-            prediction = MODEL.predict(features_scaled_df)[0]
+            prediction = int(MODEL.predict(features_scaled_df)[0])
             try:
                 probabilities = MODEL.predict_proba(features_scaled_df)[0]
-                confidence_score = float(probabilities[1])
+                confidence_score = float(probabilities[prediction])  # winning class index
+                if len(probabilities) >= 3:
+                    prob_benign = float(probabilities[0])
+                    prob_volumetric = float(probabilities[1])
+                    prob_semantic = float(probabilities[2])
+                elif len(probabilities) == 2:
+                    prob_benign = float(probabilities[0])
+                    prob_volumetric = float(probabilities[1])
             except AttributeError:
                 confidence_score = float(prediction)
 
-        is_attack = prediction == 1
+        class_name = class_names[prediction] if prediction < len(class_names) else str(prediction)
+        is_attack = prediction > 0
         processing_time_ms = (time.time() - start_time) * 1000
+
+        if not is_attack:
+            action = "NONE"
+        elif src_ip in WHITELIST_IPS or src_ip == "Unknown":
+            action = "ALLOWED"
+        else:
+            action = "BLOCKED"
 
         log_entry = {
             "Timestamp": timestamp,
             "Src_IP": src_ip,
             "Dst_IP": dst_ip,
-            "Predicted_Label": int(prediction),
+            "Predicted_Label": prediction,
+            "Class_Name": class_name,
             "Confidence_Score": round(confidence_score, 4),
-            "Model_Used": CURRENT_MODEL_NAME.replace(".pkl", "").replace(".keras", ""),
+            "Prob_Benign": round(prob_benign, 4),
+            "Prob_Volumetric": round(prob_volumetric, 4),
+            "Prob_Semantic": round(prob_semantic, 4),
+            "Model_Used": CURRENT_MODEL_NAME,
+            "Model_Type": CURRENT_MODEL_TYPE,
+            "Producer_ID": producer_id,
+            "Feature_Count": len(features_df.columns),
+            "Schema_Adjusted": schema_adjusted,
             "Processing_Time_Ms": round(processing_time_ms, 2),
+            "Action": action,
         }
 
         pd.DataFrame([log_entry]).to_csv(CSV_OUTPUT_PATH, mode="a", header=False, index=False)
 
         if DB_AVAILABLE:
             if is_attack:
-                if src_ip not in WHITELIST_IPS and src_ip != "Unknown":
-                    log_attack(src_ip, "BLOCKED", f"Attack detected (confidence: {confidence_score:.2%})")
-                else:
-                    log_attack(src_ip, "ALLOWED", f"Attack detected but whitelisted (confidence: {confidence_score:.2%})")
+                log_attack(src_ip, action, f"{class_name} detected (confidence: {confidence_score:.2%})")
 
         STATS["total_processed"] += 1
         if is_attack:
@@ -552,11 +427,9 @@ def process_message(message_value):
 
         current_time = datetime.now().strftime("%H:%M:%S")
         if is_attack:
-            print(f"{RED}{BOLD}🚨 [{current_time}] ALERT: ATTACK DETECTED!{RESET}")
+            print(f"{RED}{BOLD}🚨 [{current_time}] ALERT: {class_name.upper()} DETECTED!{RESET}")
             print(f"{RED}   Source IP: {src_ip} → Destination: {dst_ip}{RESET}")
-            print(f"{RED}   Confidence: {confidence_score:.2%} | Processing: {processing_time_ms:.2f}ms{RESET}")
-            if src_ip in WHITELIST_IPS:
-                print(f"{YELLOW}   ⚠️  IP is whitelisted - not blocking{RESET}")
+            print(f"{RED}   Confidence: {confidence_score:.2%} | Action: {action} | {processing_time_ms:.2f}ms{RESET}")
         else:
             print(f"{GREEN}✅ [{current_time}] Clean Traffic{RESET}", end="")
             print(f"{GREEN} | {src_ip} → {dst_ip} | Confidence: {confidence_score:.2%} | {processing_time_ms:.2f}ms{RESET}")
@@ -631,16 +504,26 @@ def check_and_reload_model():
         print(f"{RED}⚠️  Error checking model config: {e}{RESET}")
 
 
+def _heartbeat_worker(stop_event: threading.Event, interval: int = 10):
+    """Background thread: stamps consumer alive in DB every `interval` seconds."""
+    while not stop_event.wait(interval):
+        log_heartbeat("consumer", "alive")
+
+
 def main():
     """Main consumer loop."""
     print(f"\n{BOLD}{CYAN}╔{'═'*58}╗{RESET}")
     print(f"{BOLD}{CYAN}║{' '*10}  KAFKA CONSUMER - NETWORK IPS{' '*15}║{RESET}")
     print(f"{BOLD}{CYAN}╚{'═'*58}╝{RESET}\n")
-    
+
     # Initialize components
     load_model_and_scaler()
     initialize_csv_file()
     consumer = create_consumer()
+
+    _hb_stop = threading.Event()
+    _hb_thread = threading.Thread(target=_heartbeat_worker, args=(_hb_stop,), daemon=True)
+    _hb_thread.start()
     
     print(f"{GREEN}{BOLD}🚀 Consumer is now ACTIVE and listening for messages...{RESET}")
     print(f"{YELLOW}⏹️  Press CTRL+C to stop{RESET}")
@@ -689,7 +572,7 @@ def main():
         traceback.print_exc()
     
     finally:
-        # Clean shutdown
+        _hb_stop.set()
         print(f"{CYAN}⏳ Closing consumer...{RESET}")
         consumer.close()
         print(f"{GREEN}✅ Consumer closed successfully{RESET}")
