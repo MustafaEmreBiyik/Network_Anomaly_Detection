@@ -1,55 +1,21 @@
-# Startup Roadmap
+# App Startup Roadmap
 
-This document is the correct startup guide for the current repository state on Windows.
+Accurate startup guide for Windows. Reflects the current live pipeline.
 
-It reflects the actual live pipeline:
+## Pipeline Overview
 
-1. `test/attack_test.py` generates traffic
-2. `src/live_bridge.py` captures packets, extracts flow features, and publishes to Kafka topic `network-traffic`
-3. `src/kafka_consumer.py` consumes Kafka messages, runs inference, and appends results to `data/live_captured_traffic.csv`
-4. `src/dashboard/app.py` reads live output and renders the dashboard
-
-## Current Recommended Defaults
-
-- Use the project virtual environment at `.\venv\Scripts\python.exe`
-- Use `Random Forest` mapped to `rf_3class_model.pkl` for live testing
-- Keep `TARGET_IP=192.168.1.1` for repeatable local gateway traffic
-- Prefer `NETWORK_INTERFACE=Wi-Fi` in `.env`
-
-Notes:
-
-- `src/live_bridge.py` can now resolve Windows adapter descriptions such as `Intel(R) Wi-Fi 6 AX201 160MHz`, but `Wi-Fi` is still the cleanest value to keep in `.env`
-- `data/active_model.txt` controls the model the consumer loads at runtime
-- `Random Forest` now resolves to `rf_3class_model.pkl`, not the older binary `rf_model_v1.pkl`
-
-## Files That Matter
-
-- `run_system.py`
-  Windows launcher for Docker, consumer, dashboard, and bridge
-- `docker-compose.yml`
-  Starts Zookeeper and Kafka
-- `src/kafka_consumer.py`
-  Inference worker and CSV writer
-- `src/live_bridge.py`
-  Packet capture and Kafka producer
-- `src/dashboard/app.py`
-  Main Streamlit dashboard
-- `data/active_model.txt`
-  Active model selector used by the consumer
-- `.env`
-  Local runtime settings
-
-## Before You Start
-
-Recommended `.env` values:
-
-```env
-TARGET_IP=192.168.1.1
-NETWORK_INTERFACE=Wi-Fi
-WHITELIST_IPS=192.168.1.1,127.0.0.1,0.0.0.0,localhost
+```
+live_bridge.py  →  Kafka (Docker)  →  kafka_consumer.py  →  CSV  →  dashboard/app.py
+ (packet capture)    (broker)         (ML inference)      (data)    (Streamlit UI)
 ```
 
-If the repo does not already have a virtual environment:
+## Prerequisites
+
+- Docker Desktop running
+- Virtual environment set up at `.\venv\`
+- `.env` file present (copy from `.env.example` if missing)
+
+If setting up fresh:
 
 ```powershell
 python -m venv venv
@@ -58,75 +24,55 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-## Clean Start: Recommended Path
+Recommended `.env` values:
 
-Use this when you want a fully clean startup with no stale Kafka backlog and no duplicate Python processes.
-
-### 1. Stop old local processes
-
-```powershell
-Get-CimInstance Win32_Process |
-  Where-Object {
-    $_.Name -match 'python' -and
-    $_.CommandLine -match 'live_bridge|kafka_consumer|streamlit|run_system'
-  } |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```env
+NETWORK_INTERFACE=Wi-Fi
+TARGET_IP=192.168.1.1
+WHITELIST_IPS=192.168.1.1,127.0.0.1,0.0.0.0,localhost
 ```
 
-### 2. Reset Kafka and Zookeeper
+> Note: `live_bridge.py` auto-resolves Windows adapter descriptions (e.g. `Intel(R) Wi-Fi 6 AX201 160MHz` → `Wi-Fi`), but `Wi-Fi` is the cleanest `.env` value.
+
+---
+
+## Option A: Automated Startup (Recommended)
+
+Launches Docker, consumer, dashboard, and bridge in separate terminals automatically.
 
 ```powershell
-docker compose down
-docker compose up -d
-```
-
-### 3. Optional: archive old live output
-
-```powershell
-if (Test-Path .\data\live_captured_traffic.csv) {
-  Move-Item .\data\live_captured_traffic.csv (".\data\live_captured_traffic.preclean_{0}.csv" -f (Get-Date -Format yyyyMMdd_HHmmss))
-}
-
-Remove-Item .\temp_live.csv, .\temp_live.pcap -ErrorAction SilentlyContinue
-```
-
-### 4. Start the full stack with the launcher
-
-```powershell
-conda deactivate
+# Terminal 1 — run once, opens everything
 .\venv\Scripts\python.exe .\run_system.py
 ```
 
-What `run_system.py` does now:
-
-- forces child services onto the project `venv`
-- checks for duplicate running service processes
-- starts Docker services
-- launches:
-  - `src\kafka_consumer.py`
-  - `src\dashboard\app.py`
-  - `src\live_bridge.py`
-
-### 5. Start the attack generator in a separate terminal
+Then start the attack generator in a second terminal:
 
 ```powershell
+# Terminal 2 — traffic generator
 .\venv\Scripts\python.exe .\test\attack_test.py --target 192.168.1.1 --fixed-flow --print-every 60
 ```
 
-## Manual Startup Path
+---
 
-Use this when you want direct control over each service and their logs.
+## Option B: Manual Startup (Full Control)
 
-### Terminal 1: Docker
+Open each terminal separately for direct log access.
+
+### Terminal 1 — Kafka + Zookeeper
 
 ```powershell
 docker compose up -d
 ```
 
-### Terminal 2: Consumer
+Verify Kafka is up:
 
 ```powershell
-conda deactivate
+docker ps
+```
+
+### Terminal 2 — Kafka Consumer (ML Inference)
+
+```powershell
 .\venv\Scripts\Activate.ps1
 $env:PYTHONIOENCODING='utf-8'
 $env:KAFKA_GROUP_ID='nids-consumer-live'
@@ -134,9 +80,13 @@ $env:KAFKA_AUTO_OFFSET_RESET='latest'
 .\venv\Scripts\python.exe .\src\kafka_consumer.py
 ```
 
-### Terminal 3: Live Bridge
+Healthy output:
+- `Target Model: rf_3class_model.pkl`
+- `Consumer connected to Kafka`
+- `Consumer is now ACTIVE and listening for messages`
+- Repeated `Clean Traffic` or `ALERT: ATTACK DETECTED!`
 
-Standard mode:
+### Terminal 3 — Live Bridge (Packet Capture → Kafka)
 
 ```powershell
 .\venv\Scripts\Activate.ps1
@@ -144,7 +94,7 @@ $env:PYTHONIOENCODING='utf-8'
 .\venv\Scripts\python.exe .\src\live_bridge.py
 ```
 
-Debug mode with lower buffering:
+Debug mode (lower buffer thresholds, faster first capture):
 
 ```powershell
 .\venv\Scripts\Activate.ps1
@@ -156,102 +106,53 @@ $env:LIVE_CAPTURE_TIMEOUT_SECONDS='2'
 .\venv\Scripts\python.exe .\src\live_bridge.py
 ```
 
-### Terminal 4: Dashboard
+Healthy output:
+- `Kafka Producer Aktif (127.0.0.1:9092)`
+- `Parsed N flow(s) from CSV`
+- `N flow(s) sent to Kafka (Topic: network-traffic)`
+
+### Terminal 4 — Dashboard
 
 ```powershell
 .\venv\Scripts\Activate.ps1
 .\venv\Scripts\python.exe -m streamlit run .\src\dashboard\app.py
 ```
 
-### Terminal 5: Attack Generator
+Opens at: **http://localhost:8501**
+
+Healthy signs:
+- System Status row shows green badges
+- Total Flows counter increases
+- Recent detections table populates
+
+### Terminal 5 — Traffic / Attack Generator
 
 ```powershell
 .\venv\Scripts\python.exe .\test\attack_test.py --target 192.168.1.1 --fixed-flow --print-every 60
 ```
 
-## Fastest Dashboard-Only Path
+---
 
-Use this only when you want the UI and do not need live capture.
+## Option C: Dashboard Only (No Live Capture)
+
+Use when you only want to inspect previously captured data.
 
 ```powershell
 .\venv\Scripts\Activate.ps1
 .\venv\Scripts\python.exe -m streamlit run .\src\dashboard\app.py
 ```
 
-Important:
+Opens at: **http://localhost:8501**
 
-- this does not start Kafka
-- this does not start the consumer
-- this does not start the live bridge
-- the dashboard will only show previously captured data unless the pipeline is running elsewhere
+> Kafka, consumer, and live bridge are NOT started. Dashboard shows only data already in `data/live_captured_traffic.csv`.
 
-## Model Selection
+---
 
-The dashboard model selector writes into `data/active_model.txt`.
+## Clean Restart
 
-Current supported selector values:
+Use when you have stale processes, Kafka backlog, or mixed venv/Anaconda processes.
 
-- `Random Forest` -> `rf_3class_model.pkl`
-- `Decision Tree` -> `dt_model.pkl`
-- `XGBoost` -> `xgboost_model.pkl`
-- `LSTM` -> `lstm_model.keras`
-- `BiLSTM` -> `bilstm_model.keras`
-
-Recommended live model today:
-
-- `Random Forest`
-
-Why:
-
-- it is currently the safest live option in this repo
-- it is a real 3-class model
-- it avoids the sequence-input caveat that still affects the live LSTM/BiLSTM path
-
-Sequence-model caveat:
-
-- both `lstm_model.keras` and `bilstm_model.keras` expect input shape `(None, 10, 20)`
-- the current live consumer path still feeds single-message timesteps, so LSTM/BiLSTM are selectable but are not yet the most trustworthy live inference path
-
-## What Good Startup Looks Like
-
-### `run_system.py`
-
-Expected startup behavior:
-
-- prints launcher Python and service Python
-- starts Docker services
-- opens separate terminals for consumer, dashboard, and bridge
-
-### `src/live_bridge.py`
-
-Healthy signs:
-
-- `NETWORK_INTERFACE resolved: 'Intel(R) Wi-Fi 6 AX201 160MHz' -> 'Wi-Fi'`
-- `Kafka Producer Aktif`
-- `Parsed N flow(s) from CSV`
-- `N flow(s) sent to Kafka`
-
-### `src/kafka_consumer.py`
-
-Healthy signs:
-
-- `Target Model: rf_3class_model.pkl`
-- `Consumer connected to Kafka`
-- `Consumer is now ACTIVE and listening for messages`
-- repeated `Clean Traffic` or `ALERT: ATTACK DETECTED!`
-
-### `src/dashboard/app.py`
-
-Healthy signs:
-
-- opens at `http://localhost:8501`
-- `System Status` shows live data moving
-- `Total Flows` increases
-- recent rows appear in `data/live_captured_traffic.csv`
-
-## Verification Commands
-
-### Confirm running service processes
+### 1. Kill old Python pipeline processes
 
 ```powershell
 Get-CimInstance Win32_Process |
@@ -259,105 +160,115 @@ Get-CimInstance Win32_Process |
     $_.Name -match 'python' -and
     $_.CommandLine -match 'live_bridge|kafka_consumer|streamlit|run_system'
   } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+### 2. Reset Kafka
+
+```powershell
+docker compose down
+docker compose up -d
+```
+
+### 3. Archive old live data (optional)
+
+```powershell
+if (Test-Path .\data\live_captured_traffic.csv) {
+  Move-Item .\data\live_captured_traffic.csv (".\data\live_captured_traffic.preclean_{0}.csv" -f (Get-Date -Format yyyyMMdd_HHmmss))
+}
+Remove-Item .\temp_live.csv, .\temp_live.pcap -ErrorAction SilentlyContinue
+```
+
+### 4. Start fresh
+
+```powershell
+.\venv\Scripts\python.exe .\run_system.py
+```
+
+---
+
+## Model Selection
+
+The dashboard sidebar model selector writes to `data/active_model.txt`. The consumer reads it at runtime.
+
+| Display Name   | Model File              | Status         |
+|----------------|-------------------------|----------------|
+| Random Forest  | `rf_3class_model.pkl`   | **Recommended** |
+| Decision Tree  | `dt_3class_model.pkl`   | Stable         |
+| XGBoost        | `xgb_3class_model.pkl`  | Stable         |
+| LSTM           | `lstm_best.keras`       | Selectable*    |
+| BiLSTM         | `bilstm_best.keras`     | Selectable*    |
+
+*LSTM/BiLSTM expect input shape `(None, 10, 20)`. The current live consumer feeds single-timestep messages, so these models are selectable but Random Forest is more reliable for live inference.
+
+To manually set the active model:
+
+```powershell
+Set-Content .\data\active_model.txt "Random Forest"
+```
+
+---
+
+## Verification Commands
+
+```powershell
+# Check which pipeline processes are running
+Get-CimInstance Win32_Process |
+  Where-Object { $_.Name -match 'python' -and $_.CommandLine -match 'live_bridge|kafka_consumer|streamlit' } |
   Select-Object ProcessId, CommandLine
-```
 
-### Confirm Kafka is listening
-
-```powershell
+# Check Kafka is listening on port 9092
 Get-NetTCPConnection -LocalPort 9092 -ErrorAction SilentlyContinue |
-  Select-Object LocalAddress, LocalPort, State, OwningProcess
-```
+  Select-Object LocalAddress, LocalPort, State
 
-### Confirm fresh live output
-
-```powershell
+# Watch live CSV output in real time
 Get-Content .\data\live_captured_traffic.csv -Tail 10 -Wait
-```
 
-### Confirm the active model file
-
-```powershell
+# Check which model is active
 Get-Content .\data\active_model.txt
-```
 
-### Confirm Docker services
-
-```powershell
+# Check Docker containers
 docker ps
 ```
 
-## Common Failure Points
+---
 
-### 1. Duplicate Python stacks
+## Common Failures
 
-Symptoms:
+### Bridge sees 0 packets
 
-- multiple `live_bridge.py`, `kafka_consumer.py`, or Streamlit processes
-- mixed `venv` and Anaconda processes
-- confusing or stale dashboard output
+- Set `NETWORK_INTERFACE=Wi-Fi` in `.env`
+- Run `.\venv\Scripts\python.exe -c "from scapy.all import show_interfaces; show_interfaces()"` to list valid interface names
 
-Fix:
+### Consumer sees stale/old messages
 
-- stop all pipeline Python processes with the cleanup command above
-- restart using only `.\venv\Scripts\python.exe`
+- Run `docker compose down && docker compose up -d` to reset Kafka
+- Or set `KAFKA_AUTO_OFFSET_RESET=latest` before starting the consumer
 
-### 2. Stale Kafka backlog
+### Dashboard is empty
 
-Symptoms:
+- Confirm consumer is running and writing to `data/live_captured_traffic.csv`
+- Confirm `Get-Content .\data\live_captured_traffic.csv -Tail 5` shows recent timestamps
 
-- consumer sees old messages
-- schema mismatch warnings from older producers
-- startup looks active but current attack traffic does not match the dashboard
+### Duplicate processes / mixed venv + Anaconda
 
-Fix:
+- Run the kill command above, then restart using only `.\venv\Scripts\python.exe`
+- Never mix `conda` and `venv` environments in the same session
 
-- use `docker compose down` followed by `docker compose up -d`
-- or start the consumer with a fresh group id and `KAFKA_AUTO_OFFSET_RESET=latest`
+### Low flow count vs packet count
 
-### 3. Wrong network interface
+- Normal: 12,000 packets → 100–300 flows. The bridge batches packets and extracts flow records, not individual packets.
 
-Symptoms:
+---
 
-- `src/live_bridge.py` reports `0 Paket!`
-- attack generator runs but the bridge sees nothing
+## Key Files
 
-Fix:
-
-- set `.env` to `NETWORK_INTERFACE=Wi-Fi`
-- or keep the adapter description if the bridge resolution message confirms it mapped correctly
-
-### 4. Dashboard opens but looks empty
-
-Symptoms:
-
-- UI loads
-- live counters do not move
-- CSV file timestamps do not update
-
-Fix:
-
-- verify the consumer is running
-- verify the bridge is running
-- verify Kafka is running
-- confirm `data/live_captured_traffic.csv` is getting new rows
-
-### 5. Low attack counts vs packet counts
-
-Symptoms:
-
-- many packets sent by `attack_test.py`
-- relatively few rows on the dashboard
-
-Explanation:
-
-- the dashboard counts flows, not packets
-- `live_bridge.py` batches packets and extracts flow records
-- `12,000` packets becoming `100-300` flows is normal in this pipeline
-
-## Minimal Decision Guide
-
-- Want the cleanest full startup: use the Clean Start path with `run_system.py`
-- Want to watch each component directly: use the Manual Startup path
-- Want only the UI: use the Dashboard-Only path
-- Want the most reliable live model today: use `Random Forest` -> `rf_3class_model.pkl`
+| File | Purpose |
+|------|---------|
+| `run_system.py` | Automated launcher for all services |
+| `docker-compose.yml` | Starts Zookeeper + Kafka |
+| `src/live_bridge.py` | Packet capture → feature extraction → Kafka producer |
+| `src/kafka_consumer.py` | Kafka consumer → ML inference → CSV writer |
+| `src/dashboard/app.py` | Main SOC Streamlit dashboard |
+| `data/active_model.txt` | Active model selector (read by consumer at runtime) |
+| `.env` | Local runtime settings (interface, IPs) |
