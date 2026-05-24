@@ -1,13 +1,45 @@
 import os
 import platform
+import sqlite3
 import subprocess
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-# Güvenli Liste: Kendimizi veya modemi yanlışlıkla engellemeyelim
 WHITELIST = os.getenv("WHITELIST_IPS", "127.0.0.1,localhost,192.168.1.1,0.0.0.0").split(",")
+BLOCK_TTL_SECONDS = int(os.getenv("BLOCK_TTL_SECONDS", "3600"))
+
+_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "alerts.db")
+
+_BLOCKED_IPS_DDL = """
+CREATE TABLE IF NOT EXISTS blocked_ips (
+    ip TEXT PRIMARY KEY,
+    blocked_at TEXT NOT NULL
+);
+"""
+
+
+def _get_fw_connection():
+    conn = sqlite3.connect(_DB_PATH)
+    conn.execute(_BLOCKED_IPS_DDL)
+    return conn
+
+
+def _record_block(ip_address: str):
+    now = datetime.now(timezone.utc).isoformat()
+    with _get_fw_connection() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO blocked_ips (ip, blocked_at) VALUES (?, ?)",
+            (ip_address, now),
+        )
+        conn.commit()
+
+
+def _remove_block_record(ip_address: str):
+    with _get_fw_connection() as conn:
+        conn.execute("DELETE FROM blocked_ips WHERE ip = ?", (ip_address,))
+        conn.commit()
 
 def get_os():
     return platform.system()
@@ -112,21 +144,21 @@ def block_ip(ip_address):
             if subprocess.call(check_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
                 return True # Zaten engelli
 
-            # Ekle
             command = f"netsh advfirewall firewall add rule name=\"{rule_name}\" dir=in action=block remoteip={ip_address}"
             os.system(command)
             print(f"🚫 [WINDOWS] {ip_address} güvenlik duvarı tarafından engellendi!")
-            
+
         elif os_name == "Linux":
-            # Linux IPTables
             check_cmd = f"iptables -C INPUT -s {ip_address} -j DROP"
             if subprocess.call(check_cmd.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+                _record_block(ip_address)
                 return True
-                
+
             command = f"iptables -A INPUT -s {ip_address} -j DROP"
             os.system(command)
             print(f"🚫 [LINUX] {ip_address} güvenlik duvarı tarafından engellendi!")
-            
+
+        _record_block(ip_address)
         return True
 
     except Exception as e:
@@ -144,17 +176,50 @@ def unblock_ip(ip_address):
             command = f'netsh advfirewall firewall delete rule name="{rule_name}"'
             result = os.system(command)
             if result == 0:
+                _remove_block_record(ip_address)
                 print(f"✅ [WINDOWS] {ip_address} engeli kaldırıldı.")
                 return True
         elif os_name == "Linux":
             command = f"iptables -D INPUT -s {ip_address} -j DROP"
             result = os.system(command)
             if result == 0:
+                _remove_block_record(ip_address)
                 print(f"✅ [LINUX] {ip_address} engeli kaldırıldı.")
                 return True
 
+        _remove_block_record(ip_address)
         print(f"⚠️ {ip_address} için kaldırılacak bir kural bulunamadı.")
         return False
     except Exception as exc:
         print(f"❌ Engeli kaldırma hatası: {exc}")
         return False
+
+
+def check_expired_blocks(ttl_seconds: int | None = None):
+    """Unblock IPs whose block duration has exceeded the TTL."""
+    if ttl_seconds is None:
+        ttl_seconds = BLOCK_TTL_SECONDS
+
+    now = datetime.now(timezone.utc)
+    expired: list[str] = []
+
+    try:
+        with _get_fw_connection() as conn:
+            rows = conn.execute("SELECT ip, blocked_at FROM blocked_ips").fetchall()
+    except sqlite3.Error as exc:
+        print(f"❌ TTL check DB error: {exc}")
+        return expired
+
+    for ip, blocked_at_str in rows:
+        try:
+            blocked_at = datetime.fromisoformat(blocked_at_str)
+            if blocked_at.tzinfo is None:
+                blocked_at = blocked_at.replace(tzinfo=timezone.utc)
+            if (now - blocked_at).total_seconds() >= ttl_seconds:
+                unblock_ip(ip)
+                expired.append(ip)
+                print(f"⏰ TTL expired — auto-unblocked {ip}")
+        except (ValueError, TypeError):
+            _remove_block_record(ip)
+
+    return expired
