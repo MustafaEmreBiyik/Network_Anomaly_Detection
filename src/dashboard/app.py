@@ -8,6 +8,7 @@ Multi-tab Security Operations Center dashboard for LSTM/BiLSTM-based 3-class NID
 import os
 import sys
 import time
+import threading
 import ipaddress
 from io import BytesIO
 from datetime import datetime
@@ -69,7 +70,7 @@ if PARENT_DIR not in sys.path:
 
 try:
     from utils.db_manager import fetch_logs, log_heartbeat, fetch_recent_events, get_service_health
-    from utils.firewall_manager import block_ip, list_blocked_ips, unblock_ip
+    from utils.firewall_manager import block_ip, list_blocked_ips, unblock_ip, check_expired_blocks
 except ImportError:
     def fetch_logs():
         return pd.DataFrame()
@@ -85,6 +86,24 @@ except ImportError:
         return []
     def unblock_ip(ip):
         return False
+    def check_expired_blocks(ttl_seconds=None):
+        return []
+
+
+def _ttl_expiry_loop():
+    while True:
+        try:
+            check_expired_blocks()
+        except Exception as exc:
+            print(f"⚠️ TTL expiry loop error: {exc}")
+        time.sleep(60)
+
+
+_TTL_THREAD_STARTED = "_ttl_thread_started"
+if _TTL_THREAD_STARTED not in st.session_state:
+    t = threading.Thread(target=_ttl_expiry_loop, daemon=True)
+    t.start()
+    st.session_state[_TTL_THREAD_STARTED] = True
 
 # ---------------------------------------------------------------------------
 # CONSTANTS

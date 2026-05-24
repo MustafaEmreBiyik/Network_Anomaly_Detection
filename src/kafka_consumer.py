@@ -10,6 +10,7 @@ import json
 import time
 import shutil
 import threading
+from collections import defaultdict
 import joblib
 import pandas as pd
 import numpy as np
@@ -64,6 +65,7 @@ KAFKA_TOPIC = 'network-traffic'
 KAFKA_GROUP_ID = os.getenv("KAFKA_GROUP_ID", "nids-consumer-group-v2")
 KAFKA_AUTO_OFFSET_RESET = os.getenv("KAFKA_AUTO_OFFSET_RESET", "latest")
 WHITELIST_IPS = os.getenv("WHITELIST_IPS", "192.168.1.1,127.0.0.1,0.0.0.0,localhost").split(",")
+ESCALATION_WINDOW_SECONDS = int(os.getenv("ESCALATION_WINDOW_SECONDS", "60"))
 CSV_HEADER_COLUMNS = [
     "Timestamp",
     "Src_IP",
@@ -81,6 +83,7 @@ CSV_HEADER_COLUMNS = [
     "Schema_Adjusted",
     "Processing_Time_Ms",
     "Action",
+    "Escalation_Count",
 ]
 # ---------------------------------------------------------------------------
 # GLOBAL MODEL & SCALER
@@ -102,6 +105,24 @@ STATS = {
     "errors": 0,
     "start_time": datetime.now()
 }
+
+
+_attack_history: dict[str, list[float]] = defaultdict(list)
+
+
+def _get_escalation(src_ip: str) -> tuple[str, int]:
+    """Return (action, detection_count) based on recent attack frequency."""
+    now = time.time()
+    cutoff = now - ESCALATION_WINDOW_SECONDS
+    recent = [t for t in _attack_history[src_ip] if t > cutoff]
+    recent.append(now)
+    _attack_history[src_ip] = recent
+    count = len(recent)
+    if count >= 4:
+        return "BLOCKED", count
+    if count >= 2:
+        return "SUSPICIOUS", count
+    return "ALERT", count
 
 
 def get_expected_feature_names():
@@ -387,12 +408,13 @@ def process_message(message_value):
         is_attack = prediction > 0
         processing_time_ms = (time.time() - start_time) * 1000
 
+        escalation_count = 0
         if not is_attack:
             action = "NONE"
         elif src_ip in WHITELIST_IPS or src_ip == "Unknown":
             action = "ALLOWED"
         else:
-            action = "BLOCKED"
+            action, escalation_count = _get_escalation(src_ip)
 
         log_entry = {
             "Timestamp": timestamp,
@@ -411,13 +433,18 @@ def process_message(message_value):
             "Schema_Adjusted": schema_adjusted,
             "Processing_Time_Ms": round(processing_time_ms, 2),
             "Action": action,
+            "Escalation_Count": escalation_count,
         }
 
         pd.DataFrame([log_entry]).to_csv(CSV_OUTPUT_PATH, mode="a", header=False, index=False)
 
         if DB_AVAILABLE:
             if is_attack:
-                log_attack(src_ip, action, f"{class_name} detected (confidence: {confidence_score:.2%})")
+                detail = (
+                    f"{class_name} detected (confidence: {confidence_score:.2%}, "
+                    f"escalation: {action} #{escalation_count} in {ESCALATION_WINDOW_SECONDS}s window)"
+                )
+                log_attack(src_ip, action, detail)
 
         STATS["total_processed"] += 1
         if is_attack:
@@ -427,7 +454,8 @@ def process_message(message_value):
 
         current_time = datetime.now().strftime("%H:%M:%S")
         if is_attack:
-            print(f"{RED}{BOLD}🚨 [{current_time}] ALERT: {class_name.upper()} DETECTED!{RESET}")
+            escalation_label = f"{action} (#{escalation_count})"
+            print(f"{RED}{BOLD}🚨 [{current_time}] {escalation_label}: {class_name.upper()} DETECTED!{RESET}")
             print(f"{RED}   Source IP: {src_ip} → Destination: {dst_ip}{RESET}")
             print(f"{RED}   Confidence: {confidence_score:.2%} | Action: {action} | {processing_time_ms:.2f}ms{RESET}")
         else:
