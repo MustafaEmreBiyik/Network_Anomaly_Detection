@@ -100,6 +100,18 @@ This project implements a production-ready **Network Intrusion Detection System 
 
 > Binary models are preserved in `binary_models/` for reference. The active system uses 3-class classification.
 
+### Inference Performance (10,000-Sample Benchmark)
+
+| Model | Latency (ms/sample) | Throughput (SPS) | Hardware | Source |
+| :---------------- | :-----------------: | ---------------: | :------: | :----- |
+| **Decision Tree** | 0.0001 | 7,534,659 | CPU | `reports/latency_benchmark.json` |
+| **Random Forest** | 0.0031 | 319,398 | CPU | `reports/latency_benchmark.json` |
+| **XGBoost (GPU)** | 0.0070 | 142,428 | CUDA | `reports/latency_benchmark.json` |
+| **LSTM** | 0.0575 | 17,383 | CUDA | `reports/latency_benchmark.json` |
+| **BiLSTM** | 0.1085 | 9,212 | CUDA | `reports/latency_benchmark.json` |
+
+> **Methodology:** Each model timed over 10,000 samples with one warm-up pass (`src/models/benchmark_all_models.py`). Latency = elapsed / N × 1000 ms; Throughput = N / elapsed. DL models use batch size 256; tree models receive the full batch at once.
+
 ---
 
 ## Features

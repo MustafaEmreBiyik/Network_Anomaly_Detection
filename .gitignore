@@ -20,15 +20,18 @@ ENV/
 
 
 # Temporary runtime files (recreated each run)
-/temp_live.csv
 /temp_live.pcap
 /src/temp_live.csv
 /src/temp_live.pcap
 *.joblib
 
+# Scratch / test output CSVs
+/scratch/
+
 # IDE / editor settings
 .vscode/
 .idea/
+.claude/
 
 # Streamlit / misc state
 /.streamlit/
