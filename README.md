@@ -21,8 +21,10 @@
 This project implements a production-ready **Network Intrusion Detection System (NIDS)** that combines multiple machine learning architectures for comprehensive threat detection. The system supports both **binary** (Normal / Attack) and **3-class** (Benign / Volumetric / Semantic) classification, and is built around a **Kafka streaming pipeline** for real-time inference.
 
 **Models:** Random Forest · XGBoost (GPU) · Decision Tree · BiLSTM · LSTM  
-**Dataset:** [CICIDS 2017](https://www.unb.ca/cic/datasets/ids-2017.html) — 2.83M labeled network flows  
-**Authors:** Betül Danışmaz · Mustafa Emre Bıyık
+**Dataset:** [CICIDS 2017](https://www.unb.ca/cic/datasets/ids-2017.html) - 2.83M labeled network flows  
+**Authors:** Betül Danışmaz and Mustafa Emre Bıyık
+
+**Paper:** [IEEE SIU 2026](https://siu2026.pirireis.edu.tr/) - Multi-Class Network Intrusion Detection: Machine and Deep Learning Benchmark with Live Stream Deployment 
 
 ---
 
