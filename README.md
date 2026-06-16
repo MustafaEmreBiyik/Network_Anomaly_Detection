@@ -25,6 +25,8 @@ This project implements a production-ready **Network Intrusion Detection System 
 **Authors:** Betül Danışmaz · Mustafa Emre Bıyık  
 **Advisor:** Dr. Necip Gözüaçık
 
+**Paper:** [IEEE SIU 2026](https://siu2026.pirireis.edu.tr/) - Multi-Class Network Intrusion Detection: Machine and Deep Learning Benchmark with Live Stream Deployment 
+
 ---
 
 ## Table of Contents
@@ -193,16 +195,6 @@ This project implements a production-ready **Network Intrusion Detection System 
                         └───────────────────────┘
 ```
 
-### Model Comparison Matrix
-
-| Aspect            |  XGBoost 3-Class   | Random Forest 3-Class |       BiLSTM       |        LSTM        |
-| :---------------- | :----------------: | :-------------------: | :----------------: | :----------------: |
-| **Input Shape**   |  1 × 20 features   |    1 × 20 features    | 10 × 20 (sequence) | 10 × 20 (sequence) |
-| **GPU Support**   |      ✅ CUDA       |      ❌ CPU only      |      ✅ CUDA       |      ✅ CUDA       |
-| **Training Time** |   ~20 sec (GPU)    |        ~40 min        |     ~2–3 hours     |     ~2–3 hours     |
-| **Model Size**    |      13.2 MB       |        14.2 MB        |       3.9 MB       |       1.6 MB       |
-| **Inference**     |  0.008 ms/sample   |           —           |       Batch        |       Batch        |
-| **Best For**      | Production / speed |    Robust baseline    | Temporal patterns  |   Lower latency    |
 
 ### Technology Stack
 
