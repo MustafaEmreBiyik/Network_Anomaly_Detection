@@ -39,3 +39,6 @@ ENV/
 # Environment variables
 .env
 
+writing_assets/
+
+
