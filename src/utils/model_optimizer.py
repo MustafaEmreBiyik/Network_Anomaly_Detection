@@ -7,14 +7,16 @@ import os
 from pathlib import Path
 
 import joblib
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import shap
+# matplotlib yalnızca opsiyonel öznitelik grafiği için; main() içinde tembel içe aktarılır.
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MODEL_PATH = PROJECT_ROOT / "binarymodels" / "rf_model_v1.pkl"
-DEFAULT_DATA_PATH = PROJECT_ROOT / "data" / "processed_randomforest" / "train.csv"
+# parents[2] = repo kökü (model_registry/dashboard ile tutarlı; parents[1]=src yanlıştı).
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# Aktif 3-sınıf model ve ölçeklenmiş eğitim verisi (canlı tüketici de bu uzayı kullanır).
+DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "rf_3class_model.pkl"
+DEFAULT_DATA_PATH = PROJECT_ROOT / "data" / "processed_ml" / "train.csv"
 DEFAULT_TOP_FEATURES_PATH = PROJECT_ROOT / "models" / "top_20_features.json"
 DEFAULT_SHAP_PATH = PROJECT_ROOT / "models" / "shap_explainer.pkl"
 DEFAULT_FIG_PATH = PROJECT_ROOT / "reports" / "figures" / "top20_features.png"
@@ -56,23 +58,57 @@ def main():
     df = pd.read_csv(args.data_path)
     if args.label_column in df.columns:
         df = df.drop(columns=[args.label_column])
-    feature_names = df.columns.tolist()
 
-    importances = pd.Series(model.feature_importances_, index=feature_names)
+    # Modelin eğitildiği öznitelik kümesi/sırasıyla hizala (fazladan sütunlara dayanıklı).
+    importances_arr = model.feature_importances_
+    if hasattr(model, "feature_names_in_"):
+        model_features = [str(f) for f in model.feature_names_in_]
+    elif len(df.columns) == len(importances_arr):
+        model_features = df.columns.tolist()
+    else:
+        # numpy ile eğitilmiş + fazladan sütun: config.TOP_FEATURES ile hizalamayı dene
+        import sys
+        sys.path.insert(0, str(PROJECT_ROOT / "src"))
+        try:
+            from config import TOP_FEATURES as _CFG_TF
+        except ImportError:
+            _CFG_TF = []
+        if _CFG_TF and len(_CFG_TF) == len(importances_arr) and all(f in df.columns for f in _CFG_TF):
+            model_features = list(_CFG_TF)
+        else:
+            raise ValueError(
+                f"Öznitelik sayısı uyuşmuyor (veri={len(df.columns)}, model={len(importances_arr)}). "
+                "Doğru eğitim verisini --data-path ile verin."
+            )
+
+    missing = [f for f in model_features if f not in df.columns]
+    if missing:
+        raise ValueError(f"Veri kümesinde model öznitelikleri eksik: {missing}")
+    df = df[model_features]
+
+    importances = pd.Series(importances_arr, index=model_features)
     top_features = importances.sort_values(ascending=False).head(args.top_k)
 
     ensure_parent_dir(args.top_features_path)
     with open(args.top_features_path, "w", encoding="utf-8") as fp:
         json.dump({"top_features": top_features.index.tolist()}, fp, indent=2)
 
-    ensure_parent_dir(args.figure_path)
-    plt.figure(figsize=(8, 6))
-    top_features.sort_values().plot(kind="barh", color="#ff7f50")
-    plt.title("Top Feature Importances")
-    plt.xlabel("Importance Score")
-    plt.tight_layout()
-    plt.savefig(args.figure_path, dpi=200)
-    plt.close()
+    # Öznitelik önem grafiği opsiyoneldir; matplotlib yoksa explainer üretimini engellemesin.
+    try:
+        import matplotlib
+        matplotlib.use("Agg")  # başsız/GUI'siz ortam için
+        import matplotlib.pyplot as plt
+
+        ensure_parent_dir(args.figure_path)
+        plt.figure(figsize=(8, 6))
+        top_features.sort_values().plot(kind="barh", color="#ff7f50")
+        plt.title("Top Feature Importances")
+        plt.xlabel("Importance Score")
+        plt.tight_layout()
+        plt.savefig(args.figure_path, dpi=200)
+        plt.close()
+    except Exception as exc:
+        print(f"[UYARI] Öznitelik grafiği atlandı (matplotlib eksik olabilir): {exc}")
 
     background = shap.utils.sample(df[top_features.index], args.background_samples, random_state=42)
     explainer = shap.TreeExplainer(model, background)

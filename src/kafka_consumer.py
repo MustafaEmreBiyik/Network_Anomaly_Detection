@@ -32,6 +32,11 @@ sys.path.append(os.path.join(CURRENT_DIR, "utils"))
 from model_registry import MODEL_REGISTRY, LIVE_MODELS, DEFAULT_MODEL
 
 try:
+    from config import TOP_FEATURES
+except ImportError:
+    TOP_FEATURES = []
+
+try:
     from db_manager import log_attack, log_heartbeat, log_pipeline_event
     from firewall_manager import block_ip
     DB_AVAILABLE = True
@@ -66,7 +71,10 @@ KAFKA_GROUP_ID = os.getenv("KAFKA_GROUP_ID", "nids-consumer-group-v2")
 KAFKA_AUTO_OFFSET_RESET = os.getenv("KAFKA_AUTO_OFFSET_RESET", "latest")
 WHITELIST_IPS = os.getenv("WHITELIST_IPS", "192.168.1.1,127.0.0.1,0.0.0.0,localhost").split(",")
 ESCALATION_WINDOW_SECONDS = int(os.getenv("ESCALATION_WINDOW_SECONDS", "60"))
-CSV_HEADER_COLUMNS = [
+# Temel meta/karar sütunları + canlı SHAP açıklaması için 20 ÖLÇEKLİ öznitelik.
+# Öznitelikler, modelin gördüğü ölçekli giriş uzayında yazılır; böylece panodaki
+# xai_engine.explain_attack bunları doğrudan SHAP açıklayıcıya besleyebilir.
+CSV_BASE_COLUMNS = [
     "Timestamp",
     "Src_IP",
     "Dst_IP",
@@ -85,6 +93,7 @@ CSV_HEADER_COLUMNS = [
     "Action",
     "Escalation_Count",
 ]
+CSV_HEADER_COLUMNS = CSV_BASE_COLUMNS + list(TOP_FEATURES)
 # ---------------------------------------------------------------------------
 # GLOBAL MODEL & SCALER
 # ---------------------------------------------------------------------------
@@ -436,7 +445,18 @@ def process_message(message_value):
             "Escalation_Count": escalation_count,
         }
 
-        pd.DataFrame([log_entry]).to_csv(CSV_OUTPUT_PATH, mode="a", header=False, index=False)
+        # Canlı SHAP açıklaması için 20 ölçekli özniteliği (model giriş uzayı) ekle.
+        scaled_row = features_scaled_df.iloc[0]
+        for fname in TOP_FEATURES:
+            try:
+                log_entry[fname] = round(float(scaled_row.get(fname, 0.0)), 6)
+            except (TypeError, ValueError):
+                log_entry[fname] = 0.0
+
+        # Sütun sırasını header ile birebir hizala (header=False ile eklendiği için kritik).
+        pd.DataFrame([log_entry]).reindex(columns=CSV_HEADER_COLUMNS).to_csv(
+            CSV_OUTPUT_PATH, mode="a", header=False, index=False
+        )
 
         if DB_AVAILABLE:
             if is_attack:
