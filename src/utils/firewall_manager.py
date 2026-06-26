@@ -54,13 +54,18 @@ def list_blocked_ips():
             command = [
                 "netsh", "advfirewall", "firewall", "show", "rule", "name=all",
             ]
-            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            # encoding/errors: Türkçe Windows (cp1254) konsolunda netsh çıktısının
+            # çözümlenememesi ve stdout'un None kalması sorununu önler.
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+                encoding="utf-8", errors="replace",
+            )
             if result.returncode != 0:
                 return []
 
             blocked_rules = []
             current_rule = {}
-            for raw_line in result.stdout.splitlines():
+            for raw_line in (result.stdout or "").splitlines():
                 line = raw_line.strip()
                 if not line:
                     continue
@@ -101,12 +106,15 @@ def list_blocked_ips():
             return sorted(deduped.values(), key=lambda item: item["ip"])
 
         if os_name == "Linux":
-            result = subprocess.run(["iptables", "-S", "INPUT"], capture_output=True, text=True, check=False)
+            result = subprocess.run(
+                ["iptables", "-S", "INPUT"], capture_output=True, text=True, check=False,
+                encoding="utf-8", errors="replace",
+            )
             if result.returncode != 0:
                 return []
 
             blocked_rules = []
-            for line in result.stdout.splitlines():
+            for line in (result.stdout or "").splitlines():
                 parts = line.strip().split()
                 if "-s" in parts and "-j" in parts:
                     source_ip = parts[parts.index("-s") + 1]
@@ -120,7 +128,9 @@ def list_blocked_ips():
             return blocked_rules
 
     except Exception as exc:
-        print(f"❌ Firewall list error: {exc}")
+        # ASCII-güvenli: Türkçe Windows konsolunda (cp1254) emoji yazdırmak
+        # UnicodeEncodeError ile çağıran tarafı (paneli) çökertebilir.
+        print(f"[HATA] Guvenlik duvari listeleme hatasi: {exc}")
 
     return []
 
