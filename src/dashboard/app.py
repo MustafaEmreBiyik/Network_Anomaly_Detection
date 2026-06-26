@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Network IPS Dashboard - SOC Edition
+Ağ Saldırı Önleme Panosu — SOC Sürümü
 =====================================
-Multi-tab Security Operations Center dashboard for LSTM/BiLSTM-based 3-class NIDS.
+3 sınıflı NIDS için çok sekmeli Güvenlik Operasyon Merkezi (SOC) panosu.
 """
 
 import os
@@ -120,6 +120,36 @@ BUCKET_FREQUENCY = "10s"
 
 CLASS_NAMES = {0: "Benign", 1: "Volumetric", 2: "Semantic"}
 CLASS_COLORS = {"Benign": "#00CC66", "Volumetric": "#FF4B4B", "Semantic": "#FFA500"}
+
+# Türkçe görüntü etiketleri — iç anahtarlar (CSV/SQLite ile eşleşme mantığı için)
+# İngilizce kalır; yalnızca kullanıcıya gösterilen metin Türkçeleştirilir.
+CLASS_DISPLAY_TR = {"Benign": "Zararsız", "Volumetric": "Hacimsel", "Semantic": "Anlamsal"}
+CLASS_COLORS_TR = {CLASS_DISPLAY_TR[k]: v for k, v in CLASS_COLORS.items()}
+RISK_DISPLAY_TR = {
+    "SAFE": "GÜVENLİ", "LOW": "DÜŞÜK", "MEDIUM": "ORTA",
+    "HIGH": "YÜKSEK", "CRITICAL": "KRİTİK",
+}
+
+
+def tr_class(name: str) -> str:
+    """İç sınıf adını Türkçe görüntü etiketine çevirir."""
+    return CLASS_DISPLAY_TR.get(str(name), str(name))
+
+
+def tr_risk(name: str) -> str:
+    """İç risk adını Türkçe görüntü etiketine çevirir."""
+    return RISK_DISPLAY_TR.get(str(name).upper(), str(name))
+
+
+ACTION_DISPLAY_TR = {
+    "ALLOWED": "İZİN VERİLDİ", "BLOCKED": "ENGELLENDİ", "ALERT": "UYARI",
+    "SUSPICIOUS": "ŞÜPHELİ", "NORMAL": "NORMAL", "NONE": "YOK", "UNKNOWN": "BİLİNMİYOR",
+}
+
+
+def tr_action(name: str) -> str:
+    """İç eylem adını Türkçe görüntü etiketine çevirir (sadece görüntü)."""
+    return ACTION_DISPLAY_TR.get(str(name).upper(), str(name))
 SIMPLE_LIVE_COLUMNS = [
     "Timestamp", "Src_IP", "Dst_IP", "Predicted_Label",
     "Confidence_Score", "Model_Used", "Processing_Time_Ms",
@@ -141,6 +171,8 @@ RISK_LEVELS = {
 try:
     from model_registry import MODEL_REGISTRY as _MODEL_REG
     MODEL_MAPPING = {k: os.path.basename(v["artifact_path"]) for k, v in _MODEL_REG.items()}
+    # Hangi modeller canlı pipeline'da destekleniyor (LSTM/BiLSTM Sprint 2'de)
+    MODEL_LIVE = {k: bool(v.get("live_supported", True)) for k, v in _MODEL_REG.items()}
 except ImportError:
     MODEL_MAPPING = {
         "Random Forest": "rf_3class_model.pkl",
@@ -149,13 +181,17 @@ except ImportError:
         "LSTM":          "lstm_model.keras",
         "BiLSTM":        "bilstm_model.keras",
     }
+    MODEL_LIVE = {
+        "Random Forest": True, "Decision Tree": True, "XGBoost": True,
+        "LSTM": False, "BiLSTM": False,
+    }
 
 # ---------------------------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title=" SOC Network IPS",
-    page_icon="",
+    page_title="Ağ Saldırı Tespit Sistemi — SOC",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -373,7 +409,7 @@ def format_protocol_label(value) -> str:
 
     text = str(value).strip().upper()
     if not text or text == "NAN":
-        return "Unknown"
+        return "Bilinmiyor"
     return text
 
 
@@ -422,21 +458,21 @@ def lookup_geo_ip(ip_value: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def render_system_status(status: dict):
-    st.markdown("#### ⚙️ System Status")
+    st.markdown("#### ⚙️ Sistem Durumu")
     c1, c2, c3, c4, c5 = st.columns(5)
     def badge(col, label, ok, warn=False):
         cls = "badge-ok" if ok else ("badge-warn" if warn else "badge-err")
         icon = "✅" if ok else ("⏳" if warn else "❌")
         col.markdown(f'<span class="{cls}">{icon} {label}</span>', unsafe_allow_html=True)
     badge(c1, "LSTM/BiLSTM", status["sequence_model"])
-    badge(c2, "Scaler",     status["scaler"])
+    badge(c2, "Ölçekleyici", status["scaler"])
     badge(c3, "TensorFlow", status["tensorflow"])
     badge(c4, "Scapy",      status["scapy"], warn=status["csv_exists"] and not status["scapy"])
     ok5 = status["data_flowing"]
     warn5 = status["csv_exists"] and not ok5
-    badge(c5, f"Bridge ({status['csv_age']:.0f}s)", ok5, warn=warn5)
+    badge(c5, f"Köprü ({status['csv_age']:.0f}sn)", ok5, warn=warn5)
     if status["csv_exists"]:
-        st.caption(f"📊 CSV: {status['csv_rows']:,} rows | Last update: {status['csv_age']:.0f}s ago")
+        st.caption(f"📊 CSV: {status['csv_rows']:,} satır | Son güncelleme: {status['csv_age']:.0f}sn önce")
 
 
 def render_metrics(df: pd.DataFrame):
@@ -457,17 +493,17 @@ def render_metrics(df: pd.DataFrame):
             benign, volumetric, semantic = total, 0, 0
         avg_conf = calculate_avg_confidence(df)
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("📊 Total Flows", f"{total:,}")
-    c2.metric("🟢 Benign",      f"{benign:,}",    delta=f"{benign/total*100:.1f}%" if total else "0%")
-    c3.metric("🔴 Volumetric",  f"{volumetric:,}", delta=f"{volumetric/total*100:.1f}%" if total else "0%", delta_color="inverse")
-    c4.metric("🟠 Semantic",    f"{semantic:,}",   delta=f"{semantic/total*100:.1f}%" if total else "0%",  delta_color="inverse")
-    c5.metric("🎯 Avg Confidence", f"{avg_conf*100:.1f}%")
+    c1.metric("📊 Toplam Akış", f"{total:,}")
+    c2.metric("🟢 Zararsız",    f"{benign:,}",    delta=f"{benign/total*100:.1f}%" if total else "0%")
+    c3.metric("🔴 Hacimsel",    f"{volumetric:,}", delta=f"{volumetric/total*100:.1f}%" if total else "0%", delta_color="inverse")
+    c4.metric("🟠 Anlamsal",    f"{semantic:,}",   delta=f"{semantic/total*100:.1f}%" if total else "0%",  delta_color="inverse")
+    c5.metric("🎯 Ort. Güven", f"{avg_conf*100:.1f}%")
 
 
 def render_risk_gauge(df: pd.DataFrame):
-    st.markdown("#### 🎯 Current Risk Level")
+    st.markdown("#### 🎯 Güncel Risk Seviyesi")
     if df.empty:
-        st.info("Waiting for data…")
+        st.info("Veri bekleniyor…")
         return
     risk_col = "risk_level" if "risk_level" in df.columns else "Risk_Level"
     if risk_col in df.columns:
@@ -485,7 +521,7 @@ def render_risk_gauge(df: pd.DataFrame):
     fig = go.Figure(go.Indicator(
         mode="gauge+number+delta",
         value=current_risk,
-        title={"text": f"Risk: {info['name']}", "font": {"size": 20, "color": "#c9d1d9"}},
+        title={"text": f"Risk: {tr_risk(info['name'])}", "font": {"size": 20, "color": "#c9d1d9"}},
         delta={"reference": 2, "increasing": {"color": "#ff4b4b"}, "decreasing": {"color": "#00cc66"}},
         gauge={
             "axis": {"range": [1, 5], "tickcolor": "#8b949e"},
@@ -509,23 +545,24 @@ def render_risk_gauge(df: pd.DataFrame):
 
 
 def render_class_distribution(df: pd.DataFrame):
-    st.markdown("#### 📊 Class Distribution (3-Class)")
+    st.markdown("#### 📊 Sınıf Dağılımı (3 Sınıf)")
     if df.empty:
-        st.info("Waiting for data…")
+        st.info("Veri bekleniyor…")
         return
     col = "class_name" if "class_name" in df.columns else "Class_Name"
     if col not in df.columns:
-        st.warning("Class column not found.")
+        st.warning("Sınıf sütunu bulunamadı.")
         return
     counts = df[col].value_counts().reset_index()
     counts.columns = ["Class", "Count"]
+    counts["Class"] = counts["Class"].map(tr_class)
     fig = px.pie(counts, values="Count", names="Class", hole=0.6,
-                 color="Class", color_discrete_map=CLASS_COLORS,
-                 title="Traffic Class Distribution")
+                 color="Class", color_discrete_map=CLASS_COLORS_TR,
+                 title="Trafik Sınıfı Dağılımı")
     fig.update_traces(textposition="inside", textinfo="percent+label",
                       marker=dict(line=dict(color="#0d1117", width=2)))
     total = counts["Count"].sum()
-    fig.add_annotation(text=f"<b>{total:,}</b><br>Total", x=0.5, y=0.5,
+    fig.add_annotation(text=f"<b>{total:,}</b><br>Toplam", x=0.5, y=0.5,
                        font_size=14, showarrow=False, font_color="#c9d1d9")
     fig.update_layout(height=320, paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9",
                       legend=dict(orientation="h", y=-0.15, x=0.5, xanchor="center"))
@@ -533,9 +570,9 @@ def render_class_distribution(df: pd.DataFrame):
 
 
 def render_attack_distribution(df: pd.DataFrame):
-    st.markdown("#### Attack Distribution")
+    st.markdown("#### Saldırı Dağılımı")
     if df.empty:
-        st.info("Waiting for data...")
+        st.info("Veri bekleniyor...")
         return
 
     working = df.copy()
@@ -545,12 +582,12 @@ def render_attack_distribution(df: pd.DataFrame):
         working["risk_name"] = working["risk_level"].map(lambda level: RISK_LEVELS.get(level, RISK_LEVELS[1])["name"])
 
     if "class_name" not in working.columns:
-        st.warning("Class column not found.")
+        st.warning("Sınıf sütunu bulunamadı.")
         return
 
     attack_df = working[working["class_name"].isin(["Volumetric", "Semantic"])].copy()
     if attack_df.empty:
-        st.info("No attack detections available for sunburst distribution yet.")
+        st.info("Henüz sunburst dağılımı için saldırı tespiti yok.")
         return
 
     if "risk_name" not in attack_df.columns:
@@ -559,24 +596,28 @@ def render_attack_distribution(df: pd.DataFrame):
             "Semantic": "CRITICAL",
         })
 
+    # Türkçe görüntü için sınıf/risk adlarını çevir
+    attack_df["class_name"] = attack_df["class_name"].map(tr_class)
+    attack_df["risk_name"] = attack_df["risk_name"].map(tr_risk)
+
     distribution = (
         attack_df.groupby(["class_name", "risk_name"])
         .size()
         .reset_index(name="count")
     )
-    distribution["root"] = "Attacks"
+    distribution["root"] = "Saldırılar"
 
     fig = px.sunburst(
         distribution,
         path=["root", "class_name", "risk_name"],
         values="count",
         color="class_name",
-        color_discrete_map=CLASS_COLORS,
+        color_discrete_map=CLASS_COLORS_TR,
     )
     fig.update_traces(
         branchvalues="total",
         insidetextorientation="radial",
-        hovertemplate="<b>%{label}</b><br>Flows: %{value}<br>Share: %{percentParent:.1%}<extra></extra>",
+        hovertemplate="<b>%{label}</b><br>Akış: %{value}<br>Pay: %{percentParent:.1%}<extra></extra>",
     )
     fig.update_layout(
         height=340,
@@ -589,7 +630,7 @@ def render_attack_distribution(df: pd.DataFrame):
 
 
 def render_severity_timeline(live_df: pd.DataFrame, logs_df: pd.DataFrame):
-    st.markdown("#### Severity Timeline")
+    st.markdown("#### Önem Derecesi Zaman Çizelgesi")
 
     timeline_df = pd.DataFrame()
     if not live_df.empty and "timestamp" in live_df.columns:
@@ -609,12 +650,12 @@ def render_severity_timeline(live_df: pd.DataFrame, logs_df: pd.DataFrame):
             }).fillna("LOW")
 
     if timeline_df.empty or "timestamp" not in timeline_df.columns or "risk_name" not in timeline_df.columns:
-        st.info("No severity events available for the timeline yet.")
+        st.info("Zaman çizelgesi için henüz önem derecesi olayı yok.")
         return
 
     timeline_df = timeline_df.dropna(subset=["timestamp", "risk_name"]).copy()
     if timeline_df.empty:
-        st.info("No severity events available for the timeline yet.")
+        st.info("Zaman çizelgesi için henüz önem derecesi olayı yok.")
         return
 
     severity_order = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
@@ -627,7 +668,7 @@ def render_severity_timeline(live_df: pd.DataFrame, logs_df: pd.DataFrame):
 
     timeline_df = timeline_df[timeline_df["risk_name"].isin(severity_order)]
     if timeline_df.empty:
-        st.info("No severity events available for the timeline yet.")
+        st.info("Zaman çizelgesi için henüz önem derecesi olayı yok.")
         return
 
     timeline_series = (
@@ -638,7 +679,7 @@ def render_severity_timeline(live_df: pd.DataFrame, logs_df: pd.DataFrame):
         .sort_index()
     )
     if timeline_series.empty:
-        st.info("No severity events available for the timeline yet.")
+        st.info("Zaman çizelgesi için henüz önem derecesi olayı yok.")
         return
 
     fig = go.Figure()
@@ -647,10 +688,10 @@ def render_severity_timeline(live_df: pd.DataFrame, logs_df: pd.DataFrame):
             x=timeline_series.index,
             y=timeline_series[severity],
             mode="lines+markers",
-            name=severity,
+            name=tr_risk(severity),
             line=dict(color=severity_colors[severity], width=2.2),
             marker=dict(size=6),
-            hovertemplate=f"{severity}: %{{y}}<br>%{{x|%Y-%m-%d %H:%M}}<extra></extra>",
+            hovertemplate=f"{tr_risk(severity)}: %{{y}}<br>%{{x|%Y-%m-%d %H:%M}}<extra></extra>",
         ))
 
     fig.update_layout(
@@ -661,26 +702,26 @@ def render_severity_timeline(live_df: pd.DataFrame, logs_df: pd.DataFrame):
         margin=dict(l=20, r=20, t=20, b=10),
         legend=dict(orientation="h", y=-0.22, x=0.5, xanchor="center"),
         xaxis=dict(title=None, gridcolor="rgba(255,255,255,0.08)"),
-        yaxis=dict(title="Events / min", rangemode="tozero", gridcolor="rgba(255,255,255,0.08)"),
+        yaxis=dict(title="Olay / dk", rangemode="tozero", gridcolor="rgba(255,255,255,0.08)"),
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True)
 
 
 def render_time_series(df: pd.DataFrame):
-    st.markdown("#### 📈 Detection Time Series")
+    st.markdown("#### 📈 Tespit Zaman Serisi")
     if df.empty:
-        st.info("Waiting for data…")
+        st.info("Veri bekleniyor…")
         return
     ts = "timestamp" if "timestamp" in df.columns else "Timestamp"
     if ts not in df.columns:
-        st.warning("Timestamp column not found.")
+        st.warning("Zaman damgası sütunu bulunamadı.")
         return
     tmp = df.copy()
     tmp[ts] = pd.to_datetime(tmp[ts], errors="coerce")
     tmp = tmp.dropna(subset=[ts]).set_index(ts)
     if len(tmp) < 2:
-        st.info("Not enough data for time series.")
+        st.info("Zaman serisi için yeterli veri yok.")
         return
     c = "class_name" if "class_name" in tmp.columns else "Class_Name"
     if c in tmp.columns:
@@ -690,7 +731,7 @@ def render_time_series(df: pd.DataFrame):
     fig = px.line(series.reset_index(), x=ts,
                   y=series.columns.tolist(),
                   color_discrete_map=CLASS_COLORS,
-                  title="Detections per Minute")
+                  title="Dakikadaki Tespitler")
     fig.update_layout(height=280, paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9",
                       legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"),
                       plot_bgcolor="rgba(255,255,255,0.05)")
@@ -698,19 +739,19 @@ def render_time_series(df: pd.DataFrame):
 
 
 def render_stacked_time_series(df: pd.DataFrame, logs_df: pd.DataFrame):
-    st.markdown("#### Detection Time Series")
+    st.markdown("#### Tespit Zaman Serisi")
     if df.empty:
-        st.info("Waiting for data...")
+        st.info("Veri bekleniyor...")
         return
     if "timestamp" not in df.columns:
-        st.warning("Timestamp column not found.")
+        st.warning("Zaman damgası sütunu bulunamadı.")
         return
 
     tmp = df.copy()
     tmp["timestamp"] = pd.to_datetime(tmp["timestamp"], errors="coerce")
     tmp = tmp.dropna(subset=["timestamp"])
     if tmp.empty:
-        st.info("Not enough data for time series.")
+        st.info("Zaman serisi için yeterli veri yok.")
         return
 
     if "class_name" not in tmp.columns and "predicted_class" in tmp.columns:
@@ -725,7 +766,7 @@ def render_stacked_time_series(df: pd.DataFrame, logs_df: pd.DataFrame):
         .sort_index()
     )
     if series.empty:
-        st.info("Not enough data for time series.")
+        st.info("Zaman serisi için yeterli veri yok.")
         return
 
     confidence_cols = [c for c in tmp.columns if "prob" in c.lower()]
@@ -756,20 +797,20 @@ def render_stacked_time_series(df: pd.DataFrame, logs_df: pd.DataFrame):
             x=series.index,
             y=series[class_name],
             mode="lines",
-            name=class_name,
+            name=tr_class(class_name),
             stackgroup="traffic",
             line=dict(color=color, width=1.4),
-            hovertemplate=f"{class_name}: %{{y}}<br>%{{x|%H:%M:%S}}<extra></extra>",
+            hovertemplate=f"{tr_class(class_name)}: %{{y}}<br>%{{x|%H:%M:%S}}<extra></extra>",
         ))
 
     fig.add_trace(go.Scatter(
         x=confidence.index,
         y=confidence.values,
         mode="lines",
-        name="Avg Confidence",
+        name="Ort. Güven",
         yaxis="y2",
         line=dict(color="#58A6FF", width=2),
-        hovertemplate="Avg confidence: %{y:.1f}%<br>%{x|%H:%M:%S}<extra></extra>",
+        hovertemplate="Ort. güven: %{y:.1f}%<br>%{x|%H:%M:%S}<extra></extra>",
     ))
 
     threshold_value = load_model_threshold() * 100
@@ -777,10 +818,10 @@ def render_stacked_time_series(df: pd.DataFrame, logs_df: pd.DataFrame):
         x=[series.index.min(), series.index.max()],
         y=[threshold_value, threshold_value],
         mode="lines",
-        name=f"Threshold ({threshold_value:.1f}%)",
+        name=f"Eşik ({threshold_value:.1f}%)",
         yaxis="y2",
         line=dict(color="#FFD166", width=2, dash="dash"),
-        hovertemplate="Threshold: %{y:.1f}%<extra></extra>",
+        hovertemplate="Eşik: %{y:.1f}%<extra></extra>",
     ))
 
     blocked_events = pd.DataFrame()
@@ -807,14 +848,14 @@ def render_stacked_time_series(df: pd.DataFrame, logs_df: pd.DataFrame):
         if not blocked_counts.empty:
             total_flows = series.sum(axis=1).reindex(blocked_counts.index, fill_value=0)
             marker_y = total_flows + blocked_counts.clip(lower=1)
-            marker_text = [f"Block x{int(count)}" for count in blocked_counts]
+            marker_text = [f"Engel x{int(count)}" for count in blocked_counts]
             if len(blocked_counts) > 8:
                 marker_text = None
             fig.add_trace(go.Scatter(
                 x=blocked_counts.index,
                 y=marker_y,
                 mode="markers+text" if marker_text else "markers",
-                name="Blocked",
+                name="Engellenen",
                 text=marker_text,
                 textposition="top center",
                 marker=dict(
@@ -824,7 +865,7 @@ def render_stacked_time_series(df: pd.DataFrame, logs_df: pd.DataFrame):
                     line=dict(color="#0d1117", width=1.5),
                 ),
                 customdata=blocked_counts.astype(int),
-                hovertemplate="Blocked events: %{customdata}<br>%{x|%H:%M:%S}<extra></extra>",
+                hovertemplate="Engellenen olay: %{customdata}<br>%{x|%H:%M:%S}<extra></extra>",
             ))
 
     fig.update_layout(
@@ -836,9 +877,9 @@ def render_stacked_time_series(df: pd.DataFrame, logs_df: pd.DataFrame):
         legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"),
         margin=dict(l=20, r=20, t=40, b=10),
         xaxis=dict(title=None, gridcolor="rgba(255,255,255,0.08)"),
-        yaxis=dict(title="Flows / 10s", rangemode="tozero", gridcolor="rgba(255,255,255,0.08)"),
+        yaxis=dict(title="Akış / 10sn", rangemode="tozero", gridcolor="rgba(255,255,255,0.08)"),
         yaxis2=dict(
-            title="Confidence (%)",
+            title="Güven (%)",
             overlaying="y",
             side="right",
             range=[0, 100],
@@ -846,13 +887,13 @@ def render_stacked_time_series(df: pd.DataFrame, logs_df: pd.DataFrame):
         ),
     )
     st.plotly_chart(fig, width="stretch")
-    st.caption("10-second buckets with stacked class volume, live confidence threshold, and block markers.")
+    st.caption("10 saniyelik dilimlerde yığılmış sınıf hacmi, canlı güven eşiği ve engelleme işaretleri.")
 
 
 def render_confidence_histogram(df: pd.DataFrame):
-    st.markdown("#### 📊 Confidence Score Distribution")
+    st.markdown("#### 📊 Güven Skoru Dağılımı")
     if df.empty:
-        st.info("Waiting for data…")
+        st.info("Veri bekleniyor…")
         return
     prob_cols = [c for c in df.columns if "prob" in c.lower()]
     if prob_cols:
@@ -860,18 +901,18 @@ def render_confidence_histogram(df: pd.DataFrame):
     elif "confidence_score" in df.columns:
         max_probs = pd.to_numeric(df["confidence_score"], errors="coerce").dropna()
     else:
-        st.warning("Probability columns not found.")
+        st.warning("Olasılık sütunları bulunamadı.")
         return
     if len(max_probs) < 5:
-        st.info("Not enough data.")
+        st.info("Yeterli veri yok.")
         return
     fig = px.histogram(max_probs * 100, nbins=20,
-                       labels={"value": "Confidence (%)", "count": "Frequency"},
+                       labels={"value": "Güven (%)", "count": "Frekans"},
                        color_discrete_sequence=["#58a6ff"],
-                       title="Prediction Confidence Distribution")
+                       title="Tahmin Güven Dağılımı")
     mean_c = max_probs.mean() * 100
     fig.add_vline(x=mean_c, line_dash="dash", line_color="#ff7b72",
-                  annotation_text=f"Mean: {mean_c:.1f}%", annotation_font_color="#ff7b72")
+                  annotation_text=f"Ortalama: {mean_c:.1f}%", annotation_font_color="#ff7b72")
     fig.update_layout(showlegend=False, height=280,
                       paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9",
                       plot_bgcolor="rgba(255,255,255,0.05)")
@@ -879,9 +920,9 @@ def render_confidence_histogram(df: pd.DataFrame):
 
 
 def render_protocol_port_heatmap(df: pd.DataFrame):
-    st.markdown("#### Protocol / Port Heatmap")
+    st.markdown("#### Protokol / Port Isı Haritası")
     if df.empty:
-        st.info("Waiting for data...")
+        st.info("Veri bekleniyor...")
         return
 
     protocol_col = find_first_present_column(df, ["protocol", "Protocol"])
@@ -893,7 +934,7 @@ def render_protocol_port_heatmap(df: pd.DataFrame):
     if protocol_col is not None:
         working["protocol_label"] = working[protocol_col].apply(format_protocol_label)
     else:
-        working["protocol_label"] = "Unknown"
+        working["protocol_label"] = "Bilinmiyor"
 
     has_port_data = port_col is not None
     if has_port_data:
@@ -902,13 +943,13 @@ def render_protocol_port_heatmap(df: pd.DataFrame):
         top_ports = valid_ports.dropna().astype(int).value_counts().head(12).index.tolist()
         if top_ports:
             working["port_label"] = valid_ports.apply(
-                lambda value: str(int(value)) if pd.notna(value) and int(value) in top_ports else "Other"
+                lambda value: str(int(value)) if pd.notna(value) and int(value) in top_ports else "Diğer"
             )
         else:
-            working["port_label"] = "N/A"
+            working["port_label"] = "Yok"
             has_port_data = False
     else:
-        working["port_label"] = "N/A"
+        working["port_label"] = "Yok"
 
     heatmap_df = (
         working.groupby(["protocol_label", "port_label"])
@@ -916,7 +957,7 @@ def render_protocol_port_heatmap(df: pd.DataFrame):
         .reset_index(name="flow_count")
     )
     if heatmap_df.empty:
-        st.info("Not enough data for heatmap.")
+        st.info("Isı haritası için yeterli veri yok.")
         return
 
     protocol_order = (
@@ -928,10 +969,10 @@ def render_protocol_port_heatmap(df: pd.DataFrame):
     )
     if has_port_data:
         port_order = [str(port) for port in top_ports]
-        if "Other" in heatmap_df["port_label"].values:
-            port_order.append("Other")
+        if "Diğer" in heatmap_df["port_label"].values:
+            port_order.append("Diğer")
     else:
-        port_order = ["N/A"]
+        port_order = ["Yok"]
 
     pivot = (
         heatmap_df.pivot(index="protocol_label", columns="port_label", values="flow_count")
@@ -950,8 +991,8 @@ def render_protocol_port_heatmap(df: pd.DataFrame):
             [0.7, "#f4b942"],
             [1.0, "#ff5d5d"],
         ],
-        colorbar=dict(title="Flows"),
-        hovertemplate="Protocol: %{y}<br>Port: %{x}<br>Flows: %{z}<extra></extra>",
+        colorbar=dict(title="Akış"),
+        hovertemplate="Protokol: %{y}<br>Port: %{x}<br>Akış: %{z}<extra></extra>",
     ))
     fig.update_layout(
         height=320,
@@ -960,44 +1001,51 @@ def render_protocol_port_heatmap(df: pd.DataFrame):
         font_color="#c9d1d9",
         margin=dict(l=20, r=20, t=20, b=10),
         xaxis=dict(title="Port", side="bottom"),
-        yaxis=dict(title="Protocol"),
+        yaxis=dict(title="Protokol"),
     )
     st.plotly_chart(fig, width="stretch")
     if has_port_data:
-        st.caption("Density scale shows flow concentration by protocol and port. Missing or low-frequency ports are grouped into `Other`.")
+        st.caption("Yoğunluk ölçeği, protokol ve porta göre akış yoğunluğunu gösterir. Eksik veya düşük frekanslı portlar `Diğer` altında toplanır.")
     else:
-        st.caption("Port metadata is not available in the current live feed, so the heatmap falls back to protocol density with an `N/A` port bucket.")
+        st.caption("Mevcut canlı akışta port bilgisi yok; bu nedenle ısı haritası `Yok` port grubuyla protokol yoğunluğuna geri döner.")
 
 
 def render_recent_detections(df: pd.DataFrame):
-    st.markdown("#### 📋 Recent Detections (last 20)")
+    st.markdown("#### 📋 Son Tespitler (son 20)")
     if df.empty:
-        st.info("No detections yet.")
+        st.info("Henüz tespit yok.")
         return
     col_map = {
-        "timestamp": "Time", "Timestamp": "Time",
-        "class_name": "Class", "Class_Name": "Class",
+        "timestamp": "Zaman", "Timestamp": "Zaman",
+        "class_name": "Sınıf", "Class_Name": "Sınıf",
         "risk_level": "Risk", "Risk_Level": "Risk",
-        "risk_name": "Status", "Risk_Name": "Status",
-        "action": "Action", "Action": "Action",
+        "risk_name": "Durum", "Risk_Name": "Durum",
+        "action": "Eylem", "Action": "Eylem",
     }
     display_cols = [c for c in col_map if c in df.columns]
     if not display_cols:
         display_cols = df.columns[:6].tolist()
     recent = df[display_cols].tail(20).iloc[::-1].rename(columns=col_map)
+    # Sınıf/Durum/Eylem değerlerini Türkçe görüntüye çevir
+    if "Sınıf" in recent.columns:
+        recent["Sınıf"] = recent["Sınıf"].map(tr_class)
+    if "Durum" in recent.columns:
+        recent["Durum"] = recent["Durum"].map(tr_risk)
+    if "Eylem" in recent.columns:
+        recent["Eylem"] = recent["Eylem"].map(tr_action)
     st.dataframe(recent, width="stretch", hide_index=True)
 
 # ---------------------------------------------------------------------------
 # SIDEBAR — global controls (persistent across all tabs)
 # ---------------------------------------------------------------------------
 def render_live_attack_feed(logs_df: pd.DataFrame):
-    st.markdown("#### Live Attack Feed")
+    st.markdown("#### Canlı Saldırı Akışı")
     if logs_df.empty:
         st.markdown(
             """
             <div style="background: rgba(255,255,255,0.04); border: 1px dashed rgba(255,255,255,0.16); border-radius: 12px; padding: 18px;">
-                <div style="font-size: 0.95rem; font-weight: 600; color: #c9d1d9; margin-bottom: 6px;">No recent alerts</div>
-                <div style="font-size: 0.85rem; color: #8b949e;">The alert feed will populate automatically as attack decisions are written to the database.</div>
+                <div style="font-size: 0.95rem; font-weight: 600; color: #c9d1d9; margin-bottom: 6px;">Yakın zamanda uyarı yok</div>
+                <div style="font-size: 0.85rem; color: #8b949e;">Saldırı kararları veritabanına yazıldıkça uyarı akışı otomatik olarak dolacaktır.</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1023,9 +1071,9 @@ def render_live_attack_feed(logs_df: pd.DataFrame):
             {"bg": "rgba(88,166,255,0.18)", "fg": "#58a6ff", "border": "rgba(88,166,255,0.35)"},
         )
         timestamp = row.get("timestamp")
-        timestamp_label = timestamp.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(timestamp) else "Unknown time"
-        src_ip = row.get("src_ip", "Unknown IP")
-        details = str(row.get("details", "No details provided.")).strip() or "No details provided."
+        timestamp_label = timestamp.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(timestamp) else "Bilinmeyen zaman"
+        src_ip = row.get("src_ip", "Bilinmeyen IP")
+        details = str(row.get("details", "Ayrıntı verilmedi.")).strip() or "Ayrıntı verilmedi."
 
         st.markdown(
             f"""
@@ -1035,7 +1083,7 @@ def render_live_attack_feed(logs_df: pd.DataFrame):
                         <div style="font-size: 0.96rem; font-weight: 700; color: #c9d1d9;">{src_ip}</div>
                         <div style="font-size: 0.78rem; color: #8b949e;">{timestamp_label}</div>
                     </div>
-                    <span style="background: {style['bg']}; color: {style['fg']}; border: 1px solid {style['border']}; border-radius: 999px; padding: 4px 10px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;">{action}</span>
+                    <span style="background: {style['bg']}; color: {style['fg']}; border: 1px solid {style['border']}; border-radius: 999px; padding: 4px 10px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;">{tr_action(action)}</span>
                 </div>
                 <div style="font-size: 0.85rem; line-height: 1.55; color: #c9d1d9;">{details}</div>
             </div>
@@ -1046,7 +1094,7 @@ def render_live_attack_feed(logs_df: pd.DataFrame):
 
 def render_logs_grid(logs_df: pd.DataFrame):
     if AgGrid is None or GridOptionsBuilder is None:
-        st.warning("AgGrid dependency is missing. Install `streamlit-aggrid` to enable advanced filtering and pagination.")
+        st.warning("AgGrid bağımlılığı eksik. Gelişmiş filtreleme ve sayfalama için `streamlit-aggrid` paketini kurun.")
         st.dataframe(logs_df, width="stretch", hide_index=True)
         return {"selected_rows": [], "filtered_df": logs_df.copy()}
 
@@ -1075,13 +1123,13 @@ def render_logs_grid(logs_df: pd.DataFrame):
         paginationPageSize=10,
     )
     if "details" in grid_df.columns:
-        gb.configure_column("details", wrapText=True, autoHeight=True, flex=2, minWidth=260)
+        gb.configure_column("details", header_name="Ayrıntılar", wrapText=True, autoHeight=True, flex=2, minWidth=260)
     if "src_ip" in grid_df.columns:
-        gb.configure_column("src_ip", header_name="Source IP", minWidth=150)
+        gb.configure_column("src_ip", header_name="Kaynak IP", minWidth=150)
     if "timestamp" in grid_df.columns:
-        gb.configure_column("timestamp", header_name="Timestamp", sort="desc")
+        gb.configure_column("timestamp", header_name="Zaman Damgası", sort="desc")
     if "action" in grid_df.columns:
-        gb.configure_column("action", header_name="Action", minWidth=120)
+        gb.configure_column("action", header_name="Eylem", minWidth=120)
 
     grid_options = gb.build()
     grid_response = AgGrid(
@@ -1100,7 +1148,7 @@ def render_logs_grid(logs_df: pd.DataFrame):
     selected_rows = grid_response.get("selected_rows", [])
     filtered_rows = grid_response.get("data", grid_df.to_dict("records"))
     filtered_df = pd.DataFrame(filtered_rows)
-    st.caption(f"Selected rows: {len(selected_rows)}")
+    st.caption(f"Seçili satır: {len(selected_rows)}")
     return {"selected_rows": selected_rows, "filtered_df": filtered_df}
 
 
@@ -1137,18 +1185,18 @@ def build_logs_pdf_bytes(logs_df: pd.DataFrame, total_records: int, blocked_coun
     doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=28, rightMargin=28, topMargin=28, bottomMargin=28)
     styles = getSampleStyleSheet()
     story = [
-        Paragraph("AI Network IPS Incident Report", styles["Title"]),
+        Paragraph("Yapay Zeka Ağ IPS Olay Raporu", styles["Title"]),
         Spacer(1, 12),
-        Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["BodyText"]),
+        Paragraph(f"Oluşturulma: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["BodyText"]),
         Spacer(1, 12),
     ]
 
     summary_data = [
-        ["Metric", "Value"],
-        ["Total Records", f"{total_records:,}"],
-        ["Blocked", f"{blocked_count:,}"],
-        ["Allowed", f"{allowed_count:,}"],
-        ["Last Event", last_event],
+        ["Metrik", "Değer"],
+        ["Toplam Kayıt", f"{total_records:,}"],
+        ["Engellenen", f"{blocked_count:,}"],
+        ["İzin Verilen", f"{allowed_count:,}"],
+        ["Son Olay", last_event],
     ]
     summary_table = Table(summary_data, colWidths=[150, 300])
     summary_table.setStyle(TableStyle([
@@ -1159,7 +1207,7 @@ def build_logs_pdf_bytes(logs_df: pd.DataFrame, total_records: int, blocked_coun
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("PADDING", (0, 0), (-1, -1), 6),
     ]))
-    story.extend([Paragraph("Summary", styles["Heading2"]), Spacer(1, 8), summary_table, Spacer(1, 16)])
+    story.extend([Paragraph("Özet", styles["Heading2"]), Spacer(1, 8), summary_table, Spacer(1, 16)])
 
     log_columns = [col for col in ["timestamp", "src_ip", "action", "details"] if col in logs_df.columns]
     export_df = logs_df.copy()
@@ -1167,7 +1215,7 @@ def build_logs_pdf_bytes(logs_df: pd.DataFrame, total_records: int, blocked_coun
         export_df["timestamp"] = pd.to_datetime(export_df["timestamp"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
     export_df = export_df.fillna("")
 
-    table_rows = [["Timestamp", "Source IP", "Action", "Details"]]
+    table_rows = [["Zaman Damgası", "Kaynak IP", "Eylem", "Ayrıntılar"]]
     for _, row in export_df.head(50).iterrows():
         table_rows.append([
             str(row.get("timestamp", "")),
@@ -1188,7 +1236,7 @@ def build_logs_pdf_bytes(logs_df: pd.DataFrame, total_records: int, blocked_coun
         ("LEADING", (0, 1), (-1, -1), 10),
         ("PADDING", (0, 0), (-1, -1), 4),
     ]))
-    story.extend([Paragraph("Incident Logs", styles["Heading2"]), Spacer(1, 8), log_table])
+    story.extend([Paragraph("Olay Kayıtları", styles["Heading2"]), Spacer(1, 8), log_table])
 
     doc.build(story)
     buffer.seek(0)
@@ -1199,20 +1247,20 @@ def render_batch_log_actions(selected_rows):
     selected_ips = get_selected_log_ips(selected_rows)
     has_selection = len(selected_ips) > 0
 
-    st.markdown("##### Batch Actions")
-    st.caption(f"Selected IPs: {len(selected_ips)}")
+    st.markdown("##### Toplu Eylemler")
+    st.caption(f"Seçili IP: {len(selected_ips)}")
 
     if has_selection:
         preview = ", ".join(selected_ips[:5])
         if len(selected_ips) > 5:
             preview += ", ..."
-        st.caption(f"Targets: {preview}")
+        st.caption(f"Hedefler: {preview}")
     else:
-        st.caption("Select one or more log rows to enable batch actions.")
+        st.caption("Toplu eylemleri etkinleştirmek için bir veya daha fazla kayıt satırı seçin.")
 
     confirm_key = "confirm_batch_log_action"
     confirm = st.checkbox(
-        "I confirm the selected IPs should be updated in the firewall.",
+        "Seçili IP'lerin güvenlik duvarında güncellenmesini onaylıyorum.",
         key=confirm_key,
         disabled=not has_selection,
     )
@@ -1220,14 +1268,14 @@ def render_batch_log_actions(selected_rows):
     col_block, col_unblock = st.columns(2)
     with col_block:
         block_clicked = st.button(
-            "Block Selected",
+            "Seçilileri Engelle",
             key="batch_block_selected",
             disabled=not has_selection or not confirm,
             use_container_width=True,
         )
     with col_unblock:
         unblock_clicked = st.button(
-            "Unblock Selected",
+            "Seçililerin Engelini Kaldır",
             key="batch_unblock_selected",
             disabled=not has_selection or not confirm,
             use_container_width=True,
@@ -1238,70 +1286,75 @@ def render_batch_log_actions(selected_rows):
         failure_count = len(selected_ips) - success_count
         st.session_state[confirm_key] = False
         if success_count:
-            st.toast(f"Blocked {success_count} IP(s).")
+            st.toast(f"{success_count} IP engellendi.")
         if failure_count:
-            st.toast(f"{failure_count} IP(s) could not be blocked.", icon="⚠️")
+            st.toast(f"{failure_count} IP engellenemedi.", icon="⚠️")
 
     if unblock_clicked:
         success_count = sum(1 for ip in selected_ips if unblock_ip(ip))
         failure_count = len(selected_ips) - success_count
         st.session_state[confirm_key] = False
         if success_count:
-            st.toast(f"Unblocked {success_count} IP(s).")
+            st.toast(f"{success_count} IP'nin engeli kaldırıldı.")
         if failure_count:
-            st.toast(f"{failure_count} IP(s) could not be unblocked.", icon="⚠️")
+            st.toast(f"{failure_count} IP'nin engeli kaldırılamadı.", icon="⚠️")
 
 
 def render_firewall_viewer():
-    st.markdown("##### Firewall Viewer")
+    st.markdown("##### Güvenlik Duvarı Görüntüleyici")
 
     pending_toast = st.session_state.pop("firewall_viewer_toast", None)
     if pending_toast:
         st.toast(pending_toast["message"], icon=pending_toast.get("icon"))
 
-    blocked_rules = list_blocked_ips()
+    # OS güvenlik duvarı yardımcısının hatası tüm panoyu çökertmesin
+    try:
+        blocked_rules = list_blocked_ips()
+    except Exception as exc:
+        st.warning(f"Güvenlik duvarı kuralları okunamadı: {exc}")
+        return
     if not blocked_rules:
-        st.info("No blocked IPs currently managed by the firewall helper.")
+        st.info("Güvenlik duvarı yardımcısı tarafından yönetilen engelli IP yok.")
         return
 
-    st.caption(f"Blocked IPs: {len(blocked_rules)}")
+    st.caption(f"Engelli IP: {len(blocked_rules)}")
     for rule in blocked_rules:
-        ip_address = rule.get("ip", "Unknown")
-        direction = rule.get("direction", "In")
+        ip_address = rule.get("ip", "Bilinmiyor")
+        direction = rule.get("direction", "Gelen")
         cols = st.columns([3, 2, 1])
         with cols[0]:
             st.markdown(f"**{ip_address}**")
-            st.caption(rule.get("rule_name", "Firewall rule"))
+            st.caption(rule.get("rule_name", "Güvenlik duvarı kuralı"))
         with cols[1]:
-            st.caption(f"Direction: {direction}")
+            st.caption(f"Yön: {direction}")
         with cols[2]:
-            if st.button("Unblock", key=f"firewall_unblock_{ip_address}", use_container_width=True):
+            if st.button("Engeli Kaldır", key=f"firewall_unblock_{ip_address}", use_container_width=True):
                 ok = unblock_ip(ip_address)
                 if ok:
                     st.session_state["firewall_viewer_toast"] = {
-                        "message": f"Unblocked {ip_address}.",
+                        "message": f"{ip_address} engeli kaldırıldı.",
                         "icon": "✅",
                     }
                 else:
                     st.session_state["firewall_viewer_toast"] = {
-                        "message": f"Failed to unblock {ip_address}.",
+                        "message": f"{ip_address} engeli kaldırılamadı.",
                         "icon": "⚠️",
                     }
                 st.rerun()
 
 
 def render_threat_map(logs_df: pd.DataFrame):
-    st.markdown("#### Threat Map")
+    st.markdown("#### Tehdit Haritası")
     if logs_df.empty:
-        st.info("No incident records available for Geo-IP mapping.")
+        st.info("Coğrafi-IP haritalaması için olay kaydı yok.")
         return
     if folium is None or st_folium is None:
-        st.warning("Threat Map dependencies are missing. Install `folium` and `streamlit-folium` to enable the Geo-IP map.")
+        st.warning("Tehdit Haritası bağımlılıkları eksik. Coğrafi-IP haritasını etkinleştirmek için `folium` ve `streamlit-folium` paketlerini kurun.")
         return
 
     alert_ips = logs_df.copy()
     if "src_ip" not in alert_ips.columns:
-        st.warning("Source IP data is not available in the alert log.")
+        st.warning("Uyarı kaydında kaynak IP verisi yok.")
         return
 
     if "timestamp" in alert_ips.columns:
@@ -1327,9 +1380,9 @@ def render_threat_map(logs_df: pd.DataFrame):
     geo_df = pd.DataFrame(geocoded_rows)
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Mapped Public IPs", f"{len(geo_df):,}")
-    c2.metric("Private IP Alerts", f"{len(private_alerts):,}")
-    c3.metric("Lookup Failures", f"{len(lookup_errors):,}")
+    c1.metric("Haritalanan Genel IP", f"{len(geo_df):,}")
+    c2.metric("Özel IP Uyarıları", f"{len(private_alerts):,}")
+    c3.metric("Sorgu Hataları", f"{len(lookup_errors):,}")
 
     if not geo_df.empty:
         map_center = [geo_df["latitude"].mean(), geo_df["longitude"].mean()]
@@ -1339,7 +1392,7 @@ def render_threat_map(logs_df: pd.DataFrame):
             tiles="CartoDB dark_matter",
             control_scale=True,
         )
-        marker_layer = MarkerCluster(name="Threat Sources").add_to(threat_map) if MarkerCluster else threat_map
+        marker_layer = MarkerCluster(name="Tehdit Kaynakları").add_to(threat_map) if MarkerCluster else threat_map
 
         for _, row in geo_df.iterrows():
             timestamp = row.get("timestamp")
@@ -1347,11 +1400,11 @@ def render_threat_map(logs_df: pd.DataFrame):
             popup_html = f"""
                 <div style="min-width: 220px;">
                     <div style="font-weight: 700; margin-bottom: 6px;">{row['src_ip']}</div>
-                    <div><strong>Location:</strong> {row.get('city') or 'Unknown city'}, {row.get('country') or 'Unknown country'}</div>
-                    <div><strong>Region:</strong> {row.get('region') or row.get('continent') or 'Unknown'}</div>
-                    <div><strong>ISP:</strong> {row.get('isp') or 'Unknown'}</div>
-                    <div><strong>Action:</strong> {row.get('action', 'Unknown')}</div>
-                    <div><strong>Last Seen:</strong> {last_seen}</div>
+                    <div><strong>Konum:</strong> {row.get('city') or 'Bilinmeyen şehir'}, {row.get('country') or 'Bilinmeyen ülke'}</div>
+                    <div><strong>Bölge:</strong> {row.get('region') or row.get('continent') or 'Bilinmiyor'}</div>
+                    <div><strong>ISP:</strong> {row.get('isp') or 'Bilinmiyor'}</div>
+                    <div><strong>Eylem:</strong> {tr_action(row.get('action', 'Bilinmiyor'))}</div>
+                    <div><strong>Son Görülme:</strong> {last_seen}</div>
                 </div>
             """
             folium.CircleMarker(
@@ -1367,27 +1420,188 @@ def render_threat_map(logs_df: pd.DataFrame):
 
         st_folium(threat_map, use_container_width=True, height=460, returned_objects=[])
     else:
-        st.info("No public IPs could be mapped yet. Private IPs are listed separately below.")
+        st.info("Henüz haritalanabilecek genel IP yok. Özel IP'ler aşağıda ayrıca listelenmiştir.")
 
     if not private_alerts.empty:
-        st.markdown("##### Private IP Alerts")
+        st.markdown("##### Özel IP Uyarıları")
         private_display = private_alerts.reindex(columns=["src_ip", "action", "timestamp", "details"]).copy()
-        private_display.columns = ["IP", "Action", "Last Seen", "Details"]
+        if "action" in private_display.columns:
+            private_display["action"] = private_display["action"].map(tr_action)
+        private_display.columns = ["IP", "Eylem", "Son Görülme", "Ayrıntılar"]
         st.dataframe(private_display, width="stretch", hide_index=True)
 
     if lookup_errors:
         unresolved = pd.DataFrame(lookup_errors)
-        with st.expander("Geo-IP Lookup Issues"):
+        with st.expander("Coğrafi-IP Sorgu Sorunları"):
             st.dataframe(unresolved, width="stretch", hide_index=True)
 
 
-st.sidebar.markdown('<p class="soc-header">SOC Control Panel</p>', unsafe_allow_html=True)
+# ---------------------------------------------------------------------------
+# XAI (Açıklanabilir Yapay Zeka) yardımcıları
+# ---------------------------------------------------------------------------
+# Kanonik liste: model_optimizer'ın ürettiği (explainer'ın öznitelik sırasını tanımlayan) dosya.
+# SHAP vektör hizalaması için bu sıra önceliklidir; sonra reports kopyası, sonra config.
+MODELS_TOP_FEATURES_PATH = os.path.join(PROJECT_ROOT, "models", "top_20_features.json")
+REPORTS_TOP_FEATURES_PATH = os.path.join(PROJECT_ROOT, "reports", "data", "top_20_features.json")
 
-# 1. Status LEDs
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_top_feature_names() -> list[str]:
+    """20 öznitelik adını döndürür (models JSON → reports JSON → config → boş)."""
+    import json
+    for path in (MODELS_TOP_FEATURES_PATH, REPORTS_TOP_FEATURES_PATH):
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                names = json.load(fp).get("top_features") or []
+            if names:
+                return list(names)
+        except Exception:
+            continue
+    try:
+        from config import TOP_FEATURES as _TF
+        if _TF:
+            return list(_TF)
+    except Exception:
+        pass
+    return []
+
+
+def render_xai_global_importance():
+    """JSON'daki öncelik sırasına dayalı global öznitelik önem grafiği (her ortamda çalışır)."""
+    st.markdown("##### 🌐 Global Öznitelik Önceliği")
+    names = load_top_feature_names()
+    if not names:
+        st.info("Öznitelik listesi bulunamadı (`reports/data/top_20_features.json`).")
+        return
+    n = len(names)
+    imp_df = pd.DataFrame({"Öznitelik": names, "Öncelik": [n - i for i in range(n)]})
+    imp_df = imp_df.sort_values("Öncelik", ascending=True)
+    fig = px.bar(
+        imp_df, x="Öncelik", y="Öznitelik", orientation="h",
+        color="Öncelik", color_continuous_scale="Blues",
+        title="Model Öznitelik Önceliği (üstteki = en önemli)",
+    )
+    fig.update_layout(
+        height=520, paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9",
+        plot_bgcolor="rgba(255,255,255,0.05)", coloraxis_showscale=False,
+        margin=dict(l=10, r=10, t=50, b=10),
+        xaxis=dict(title="Öncelik puanı (sıra tabanlı)", gridcolor="rgba(255,255,255,0.08)"),
+        yaxis=dict(title=None),
+    )
+    st.plotly_chart(fig, width="stretch")
+    st.caption(
+        "Sıralama, eğitimde Random Forest önem puanları ve SHAP analizine göre seçilen 20 "
+        "önceliklendirilmiş özniteliği yansıtır. Sayısal SHAP önemleri için SHAP açıklayıcı gerekir."
+    )
+
+
+def render_xai_probability_breakdown(df: pd.DataFrame):
+    """Seçili tespit için 3 sınıf olasılık kırılımı (canlı Prob_* alanlarından)."""
+    st.markdown("##### 🎯 Seçili Tespit — Sınıf Olasılık Kırılımı")
+    if df.empty:
+        st.info("Veri bekleniyor…")
+        return None
+    prob_map = {"Zararsız": "prob_benign", "Hacimsel": "prob_volumetric", "Anlamsal": "prob_semantic"}
+    present = {label: col for label, col in prob_map.items() if col in df.columns}
+    if not present:
+        st.info("Canlı akışta sınıf olasılığı (`Prob_*`) bulunamadı.")
+        return None
+
+    recent = df.copy()
+    if "timestamp" in recent.columns:
+        recent = recent.sort_values("timestamp", ascending=False)
+    recent = recent.head(50).reset_index(drop=True)
+
+    def _row_label(i: int) -> str:
+        row = recent.iloc[i]
+        ts = row.get("timestamp")
+        ts_label = ts.strftime("%H:%M:%S") if pd.notna(ts) else "—"
+        cls_internal = row.get("class_name")
+        if not isinstance(cls_internal, str):
+            cls_internal = CLASS_NAMES.get(int(pd.to_numeric(row.get("predicted_class", 0), errors="coerce") or 0), "?")
+        return f"#{i} · {ts_label} · {tr_class(cls_internal)} · {row.get('src_ip', '—')}"
+
+    idx = st.selectbox(
+        "Tespit seç", list(range(len(recent))),
+        format_func=_row_label, key="xai_detection_select",
+    )
+    row = recent.iloc[idx]
+
+    labels = list(present.keys())
+    values = [float(pd.to_numeric(row.get(col), errors="coerce") or 0.0) * 100 for col in present.values()]
+    bar_df = pd.DataFrame({"Sınıf": labels, "Olasılık": values})
+    fig = px.bar(bar_df, x="Sınıf", y="Olasılık", color="Sınıf",
+                 color_discrete_map=CLASS_COLORS_TR, text="Olasılık")
+    fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+    fig.update_layout(
+        height=320, paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9",
+        plot_bgcolor="rgba(255,255,255,0.05)", showlegend=False,
+        margin=dict(l=10, r=10, t=20, b=10),
+        yaxis=dict(title="Olasılık (%)", range=[0, 100], gridcolor="rgba(255,255,255,0.08)"),
+        xaxis=dict(title=None),
+    )
+    st.plotly_chart(fig, width="stretch")
+
+    pred_cls = tr_class(row.get("class_name", "?"))
+    conf = pd.to_numeric(row.get("confidence_score"), errors="coerce")
+    st.caption(f"Tahmin: **{pred_cls}**" + (f" · Güven: {conf*100:.1f}%" if pd.notna(conf) else ""))
+    return row
+
+
+def render_xai_shap_explanation(df: pd.DataFrame, selected_row=None):
+    """SHAP öznitelik katkıları — artefakt/öznitelik yoksa zarifçe rehberlik eder."""
+    st.markdown("##### 🧩 SHAP Öznitelik Katkıları")
+
+    # 1) Önce veri: 20 öznitelik canlı kayıtta var mı? (Yoksa ağır SHAP motorunu yükleme.)
+    feature_names = load_top_feature_names()
+    available = [f for f in feature_names if f in df.columns]
+    if not feature_names or len(available) < len(feature_names):
+        st.info(
+            "Tekil akış için SHAP açıklaması, 20 özniteliğin canlı kayıtta bulunmasını gerektirir. "
+            "Tüketici güncellendiğinde öznitelik vektörü CSV'ye yazılır ve bu panel otomatik etkinleşir."
+        )
+        return
+
+    # 2) Sonra artefakt: SHAP açıklayıcıyı güvenli (lazy) içe aktar.
+    try:
+        from utils.xai_engine import explain_attack  # import anında SHAP yükler
+    except Exception as exc:
+        st.info(
+            "SHAP açıklayıcı henüz hazır değil. Etkinleştirmek için `models/shap_explainer.pkl` "
+            "ve `models/top_20_features.json` dosyalarını `src/utils/model_optimizer.py` ile üretin "
+            f"(gerekirse `git lfs pull`).\n\nAyrıntı: `{exc}`"
+        )
+        return
+
+    if selected_row is None:
+        selected_row = df.iloc[-1]
+    vector = [pd.to_numeric(selected_row.get(f), errors="coerce") for f in feature_names]
+    if any(pd.isna(v) for v in vector):
+        st.warning("Seçili kayıtta bazı öznitelik değerleri eksik.")
+        return
+
+    pred = int(pd.to_numeric(selected_row.get("predicted_class", 1), errors="coerce") or 1)
+    attack_idx = pred if pred in (1, 2) else 1
+    try:
+        reasons = explain_attack(vector, feature_names, attack_class_index=attack_idx, top_n=10)
+    except Exception as exc:
+        st.warning(f"SHAP açıklaması üretilemedi: {exc}")
+        return
+    if not reasons:
+        st.info("Bu tahmin için baskın öznitelik katkısı bulunamadı.")
+        return
+    st.caption("Bu tahmine en çok katkı yapan öznitelikler (yön ve büyüklük):")
+    for item in reasons:
+        st.markdown(f"- **{item['feature']}** — {item['impact']}")
+
+
+st.sidebar.markdown('<p class="soc-header">SOC Kontrol Paneli</p>', unsafe_allow_html=True)
+
+# 1. Durum LED'leri
 status = get_system_status()
 led_data = "🟢" if status["data_flowing"] else ("🟡" if status["csv_exists"] else "🔴")
 led_tf = "🟢" if status["tensorflow"] else "🔴"
-st.sidebar.markdown(f"**Data Flow:** {led_data} &nbsp;|&nbsp; **Engine:** {led_tf}")
+st.sidebar.markdown(f"**Veri Akışı:** {led_data} &nbsp;|&nbsp; **Motor:** {led_tf}")
 st.sidebar.markdown("---")
 
 # Pre-load data for global filtering & banner
@@ -1415,40 +1629,41 @@ if not df_live_full.empty:
 
 st.sidebar.markdown(f"""
 <div style="background: {threat_info['color']}15; border: 1px solid {threat_info['color']}50; padding: 12px; border-radius: 8px; text-align: center; margin-bottom: 15px;">
-    <div style="font-size: 0.8rem; color: #8b949e; margin-bottom: 5px;">THREAT LEVEL (LAST 60S)</div>
-    <div style="font-size: 1.4rem; font-weight: bold; color: {threat_info['color']};">{threat_info['emoji']} {threat_info['name']}</div>
+    <div style="font-size: 0.8rem; color: #8b949e; margin-bottom: 5px;">TEHDİT SEVİYESİ (SON 60 SN)</div>
+    <div style="font-size: 1.4rem; font-weight: bold; color: {threat_info['color']};">{threat_info['emoji']} {tr_risk(threat_info['name'])}</div>
 </div>
 """, unsafe_allow_html=True)
 
-# 3. Time Window
-time_window = st.sidebar.selectbox("📅 Time Window", ["Last 5 min", "Last 1 hour", "Last 24h", "All Time"])
+# 3. Zaman Penceresi
+time_window = st.sidebar.selectbox("📅 Zaman Penceresi", ["Son 5 dk", "Son 1 saat", "Son 24 saat", "Tüm Zamanlar"])
 st.sidebar.markdown("---")
 
-# 4. Live Mode
-st.sidebar.subheader("🔄 Live Refresh")
-live_mode = st.sidebar.toggle("⚡ Live Mode", key="live_mode")
-refresh_interval = st.sidebar.slider("Interval (seconds)", 5, 60, key="refresh_interval", disabled=not live_mode)
+# 4. Canlı Mod
+st.sidebar.subheader("🔄 Canlı Yenileme")
+live_mode = st.sidebar.toggle("⚡ Canlı Mod", key="live_mode")
+refresh_interval = st.sidebar.slider("Aralık (saniye)", 5, 60, key="refresh_interval", disabled=not live_mode)
 st.sidebar.markdown("---")
 
-# Filter dataframes for the tabs
+# Sekmeler için veri çerçevelerini filtrele
 def filter_dataframe(df: pd.DataFrame, window: str) -> pd.DataFrame:
-    if df.empty or window == "All Time": return df
+    if df.empty or window == "Tüm Zamanlar": return df
     c = "timestamp" if "timestamp" in df.columns else "Timestamp"
     if c not in df.columns: return df
+    df = df.copy()  # girdiyi yerinde değiştirme (mutasyon hatası önlenir)
     df[c] = pd.to_datetime(df[c], errors="coerce")
     m_ts = df[c].max()
     if pd.isna(m_ts): return df
-    if window == "Last 5 min": cutoff = m_ts - pd.Timedelta(minutes=5)
-    elif window == "Last 1 hour": cutoff = m_ts - pd.Timedelta(hours=1)
-    elif window == "Last 24h": cutoff = m_ts - pd.Timedelta(hours=24)
+    if window == "Son 5 dk": cutoff = m_ts - pd.Timedelta(minutes=5)
+    elif window == "Son 1 saat": cutoff = m_ts - pd.Timedelta(hours=1)
+    elif window == "Son 24 saat": cutoff = m_ts - pd.Timedelta(hours=24)
     else: return df
     return df[df[c] >= cutoff].copy()
 
 live_df = filter_dataframe(df_live_full, time_window)
 logs_df = filter_dataframe(df_logs_full, time_window)
 
-# 5. Model Status Badge
-st.sidebar.subheader("🧠 Active AI Model")
+# 5. Model Durum Rozeti
+st.sidebar.subheader("🧠 Aktif Yapay Zeka Modeli")
 os.makedirs(os.path.dirname(ACTIVE_MODEL_PATH), exist_ok=True)
 _default_model_key = "Random Forest"
 try:
@@ -1469,7 +1684,7 @@ except Exception:
 
 _model_keys = list(MODEL_MAPPING.keys())
 selected_model = st.sidebar.selectbox(
-    "Select Model",
+    "Model Seç",
     _model_keys,
     index=_model_keys.index(current_model) if current_model in _model_keys else 0,
     key="model_selector",
@@ -1478,49 +1693,54 @@ selected_model = st.sidebar.selectbox(
 if selected_model != current_model:
     try:
         with open(ACTIVE_MODEL_PATH, "w") as f:
-            f.write(selected_model)  # write registry key name, not filename
+            f.write(selected_model)  # dosya adı değil, registry anahtar adı yazılır
     except Exception:
         pass
 
+_is_live = MODEL_LIVE.get(selected_model, True)
+_badge_color = "#00CC66" if _is_live else "#FFA500"
+_badge_text = "● Aktif" if _is_live else "● Canlı değil"
 st.sidebar.markdown(f"""
 <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.05); padding: 8px 12px; border-radius: 6px; margin-top: -10px;">
     <span style="font-weight: 600; font-size: 0.9rem;">{selected_model}</span>
-    <span style="color: #00CC66; font-size: 0.8rem;">● Active</span>
+    <span style="color: {_badge_color}; font-size: 0.8rem;">{_badge_text}</span>
 </div>
 """, unsafe_allow_html=True)
+if not _is_live:
+    st.sidebar.warning("⚠️ Bu model henüz canlı pipeline'da desteklenmiyor (Sprint 2). Tüketici varsayılan modele dönebilir.")
 
 st.sidebar.markdown("---")
 
-# 6. IP Unblock
-st.sidebar.subheader("🔓 IP Unblock")
-ip_input = st.sidebar.text_input("IP Address", key="ip_unblock_input")
-if st.sidebar.button("Unblock IP", key="unblock_btn"):
+# 6. IP Engel Kaldırma
+st.sidebar.subheader("🔓 IP Engelini Kaldır")
+ip_input = st.sidebar.text_input("IP Adresi", key="ip_unblock_input")
+if st.sidebar.button("Engeli Kaldır", key="unblock_btn"):
     if ip_input.strip():
         ok = unblock_ip(ip_input.strip())
-        st.sidebar.success(f"✅ {ip_input} unblocked.") if ok else st.sidebar.warning("⚠️ Operation failed.")
+        st.sidebar.success(f"✅ {ip_input} engeli kaldırıldı.") if ok else st.sidebar.warning("⚠️ İşlem başarısız.")
     else:
-        st.sidebar.warning("Enter a valid IP address.")
+        st.sidebar.warning("Geçerli bir IP adresi girin.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"🕐 Last refresh: {datetime.now().strftime('%H:%M:%S')}")
-st.sidebar.caption(f"🔁 Refresh #{count}")
+st.sidebar.caption(f"🕐 Son yenileme: {datetime.now().strftime('%H:%M:%S')}")
+st.sidebar.caption(f"🔁 Yenileme #{count}")
 
 # ---------------------------------------------------------------------------
 # PAGE HEADER
 # ---------------------------------------------------------------------------
-st.markdown('<p class="soc-header"> AI Network IPS — Security Operations Center</p>', unsafe_allow_html=True)
-st.markdown('<p class="soc-sub">3-Class LSTM/BiLSTM NIDS &nbsp;|&nbsp; Benign · Volumetric · Semantic &nbsp;|&nbsp; Real-time Detection</p>', unsafe_allow_html=True)
+st.markdown('<p class="soc-header">🛡️ Ağ Saldırı Önleme Sistemi — Güvenlik Operasyon Merkezi</p>', unsafe_allow_html=True)
+st.markdown('<p class="soc-sub">3 Sınıflı NIDS &nbsp;|&nbsp; Zararsız · Hacimsel · Anlamsal &nbsp;|&nbsp; Gerçek Zamanlı Tespit</p>', unsafe_allow_html=True)
 st.markdown("---")
 
 # ---------------------------------------------------------------------------
-# FIVE-TAB LAYOUT
+# BEŞ SEKMELİ DÜZEN
 # ---------------------------------------------------------------------------
 tab_monitor, tab_map, tab_logs, tab_xai, tab_admin = st.tabs([
-    "🖥️ Live Monitor",
-    "🗺️ Threat Map",
-    "📋 Incident Logs",
-    "🧠 XAI Explainer",
-    "⚙️ Admin & Response",
+    "🖥️ Canlı İzleme",
+    "🗺️ Tehdit Haritası",
+    "📋 Olay Kayıtları",
+    "🧠 XAI Açıklayıcı",
+    "⚙️ Yönetim & Yanıt",
 ])
 
 # ── Tab 1: Live Monitor ────────────────────────────────────────────────────
@@ -1552,37 +1772,32 @@ with tab_monitor:
     st.markdown("---")
     render_recent_detections(live_df)
 
-# ── Tab 2: Threat Map ──────────────────────────────────────────────────────
+# ── Sekme 2: Tehdit Haritası ───────────────────────────────────────────────
 with tab_map:
-    st.markdown("#### 🗺️ Threat Map")
-    st.info("🚧 **Coming in Sprint 2** — Geographic threat heatmap with IP geolocation and attack-origin clustering.")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Active Threat Sources", "—")
-    col2.metric("Top Attack Country", "—")
-    col3.metric("Blocked IPs (24h)", "—")
-    st.markdown("---")
+    st.markdown("#### 🗺️ Tehdit Haritası")
+    st.caption("Coğrafi-IP konumlandırma, saldırı dağılımı ve önem derecesi zaman çizelgesi.")
     render_threat_map(logs_df)
     st.markdown("---")
     render_attack_distribution(live_df)
     st.markdown("---")
     render_severity_timeline(live_df, logs_df)
 
-# ── Tab 3: Incident Logs ──────────────────────────────────────────────────
+# ── Sekme 3: Olay Kayıtları ────────────────────────────────────────────────
 with tab_logs:
-    st.markdown("#### 📋 Incident Logs")
+    st.markdown("#### 📋 Olay Kayıtları")
     if logs_df.empty:
-        st.info("No incident records found in the database.")
+        st.info("Veritabanında olay kaydı bulunamadı.")
     else:
-        # Quick summary metrics
+        # Hızlı özet metrikleri
         total_l   = len(logs_df)
         blocked_l = int((logs_df.get("action", pd.Series(dtype=str)) == "BLOCKED").sum())
         allowed_l = int((logs_df.get("action", pd.Series(dtype=str)) == "ALLOWED").sum())
         last_evt  = logs_df["timestamp"].max().strftime("%Y-%m-%d %H:%M:%S") if "timestamp" in logs_df.columns else "—"
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Records", f"{total_l:,}")
-        c2.metric("Blocked", f"{blocked_l:,}")
-        c3.metric("Allowed", f"{allowed_l:,}")
-        c4.metric("Last Event", last_evt)
+        c1.metric("Toplam Kayıt", f"{total_l:,}")
+        c2.metric("Engellenen", f"{blocked_l:,}")
+        c3.metric("İzin Verilen", f"{allowed_l:,}")
+        c4.metric("Son Olay", last_evt)
         st.markdown("---")
         grid_state = render_logs_grid(logs_df)
         selected_rows = grid_state["selected_rows"]
@@ -1597,70 +1812,72 @@ with tab_logs:
                 export_last = export_ts.max().strftime("%Y-%m-%d %H:%M:%S")
 
         st.markdown("---")
-        st.markdown("##### Export Reports")
+        st.markdown("##### Rapor Dışa Aktarımı")
         csv_bytes = build_logs_csv_bytes(export_df)
         pdf_bytes = build_logs_pdf_bytes(export_df, export_total, export_blocked, export_allowed, export_last)
         export_col_csv, export_col_pdf = st.columns(2)
         with export_col_csv:
             st.download_button(
-                "Export CSV",
+                "CSV Dışa Aktar",
                 data=csv_bytes,
-                file_name=f"incident_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                file_name=f"olay_kayitlari_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
         with export_col_pdf:
             if pdf_bytes is None:
                 st.button(
-                    "Export PDF",
+                    "PDF Dışa Aktar",
                     disabled=True,
-                    help="Install `reportlab` to enable PDF export.",
+                    help="PDF dışa aktarımı için `reportlab` paketini kurun.",
                     use_container_width=True,
                 )
             else:
                 st.download_button(
-                    "Export PDF",
+                    "PDF Dışa Aktar",
                     data=pdf_bytes,
-                    file_name=f"incident_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                    file_name=f"olay_raporu_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
                     mime="application/pdf",
                     use_container_width=True,
                 )
         st.markdown("---")
         render_batch_log_actions(selected_rows)
 
-# ── Tab 4: XAI Explainer ──────────────────────────────────────────────────
+# ── Sekme 4: XAI Açıklayıcı ─────────────────────────────────────────────────
 with tab_xai:
-    st.markdown("#### 🧠 XAI Explainer")
-    st.info("🚧 **Coming in Sprint 3** — SHAP / LIME feature-importance explanations for individual predictions, with attention heatmaps from the BiLSTM layer.")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Planned visualizations:**")
-        st.markdown("- SHAP waterfall charts per prediction\n- Top-N feature importance bar chart\n- Attention weight heatmap (BiLSTM)\n- Counterfactual 'what-if' sliders")
-    with col2:
-        st.markdown("**Supported models:**")
-        for m in MODEL_MAPPING:
-            st.markdown(f"- {m}")
+    st.markdown("#### 🧠 XAI Açıklayıcı")
+    st.caption(
+        "Modelin kararlarını açıklar: global öznitelik önceliği, seçili tespit için sınıf "
+        "olasılık kırılımı ve SHAP tabanlı öznitelik katkıları."
+    )
+    col_global, col_local = st.columns([1, 1])
+    with col_global:
+        render_xai_global_importance()
+    with col_local:
+        xai_selected_row = render_xai_probability_breakdown(live_df)
+    st.markdown("---")
+    render_xai_shap_explanation(live_df, xai_selected_row)
 
-# ── Tab 5: Admin & Response ───────────────────────────────────────────────
+# ── Sekme 5: Yönetim & Yanıt ────────────────────────────────────────────────
 with tab_admin:
-    st.markdown("#### ⚙️ Admin & Response")
-    st.info("🚧 **Coming in Sprint 4** — Automated response rules, block/allow policy management, alert thresholds, and audit trail.")
+    st.markdown("#### ⚙️ Yönetim & Yanıt")
+    st.info("🚧 **Yapım aşamasında (Sprint 4)** — Karar eşiği yönetimi, sistem olay zaman tüneli, servis sağlığı ve otomatik yanıt kuralları.")
 
-    st.markdown("##### 🔧 Quick Actions")
+    st.markdown("##### 🔧 Hızlı Eylemler")
     a1, a2, a3 = st.columns(3)
     with a1:
-        st.markdown("**Model Management**")
-        st.caption(f"Active model: `{selected_model}`")
-        st.caption(f"File: `{MODEL_MAPPING[selected_model]}`")
+        st.markdown("**Model Yönetimi**")
+        st.caption(f"Aktif model: `{selected_model}`")
+        st.caption(f"Dosya: `{MODEL_MAPPING[selected_model]}`")
     with a2:
-        st.markdown("**System Health**")
+        st.markdown("**Sistem Sağlığı**")
         status_q = get_system_status()
-        st.caption(f"Data flowing: {'✅ Yes' if status_q['data_flowing'] else '❌ No'}")
-        st.caption(f"CSV rows: {status_q['csv_rows']:,}")
+        st.caption(f"Veri akışı: {'✅ Evet' if status_q['data_flowing'] else '❌ Hayır'}")
+        st.caption(f"CSV satırı: {status_q['csv_rows']:,}")
     with a3:
-        st.markdown("**Response Actions**")
-        st.caption("IP blocking managed via firewall_manager")
-        st.caption("Use sidebar → IP Unblock for immediate relief")
+        st.markdown("**Yanıt Eylemleri**")
+        st.caption("IP engelleme firewall_manager ile yönetilir")
+        st.caption("Anında müdahale için kenar çubuğu → IP Engelini Kaldır")
 
     st.markdown("---")
     render_firewall_viewer()
