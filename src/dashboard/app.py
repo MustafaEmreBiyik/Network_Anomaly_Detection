@@ -1595,6 +1595,247 @@ def render_xai_shap_explanation(df: pd.DataFrame, selected_row=None):
         st.markdown(f"- **{item['feature']}** — {item['impact']}")
 
 
+# ---------------------------------------------------------------------------
+# Model Performansı yardımcıları (Sprint 3)
+# ---------------------------------------------------------------------------
+LATENCY_BENCHMARK_PATH = os.path.join(PROJECT_ROOT, "reports", "latency_benchmark.json")
+PERF_MODELS = ["Random Forest", "XGBoost", "Decision Tree", "LSTM", "BiLSTM"]
+PERF_CONFIG_FILES = {
+    "Random Forest": "rf_3class_config.json",
+    "XGBoost": "xgb_3class_config.json",
+    "LSTM": "lstm_config.json",
+    "BiLSTM": "bilstm_config.json",
+}
+PERF_REPORT_FILES = {
+    "LSTM": os.path.join("reports", "lstm", "classification_report.txt"),
+    "BiLSTM": os.path.join("reports", "bilstm", "classification_report.txt"),
+}
+PERF_LATENCY_ALIASES = {
+    "XGBoost (GPU)": "XGBoost", "XGBoost": "XGBoost", "Random Forest": "Random Forest",
+    "Decision Tree": "Decision Tree", "LSTM": "LSTM", "BiLSTM": "BiLSTM",
+}
+# Dosyada metrik bulunmayan modeller için referans (kaynak: proje değerlendirme özeti)
+PERF_REFERENCE = {
+    "Decision Tree": {"accuracy": 0.9727, "macro_f1": 0.94},
+}
+
+
+def _perf_cls_label(cls) -> str:
+    """Sınıf anahtarını (isim ya da indeks) Türkçe görüntü etiketine çevirir."""
+    s = str(cls)
+    if s.isdigit():
+        return tr_class(CLASS_NAMES.get(int(s), s))
+    return tr_class(s)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_latency_benchmark() -> dict:
+    """{registry_key: {latency_ms, throughput, gpu}}"""
+    import json
+    out = {}
+    try:
+        with open(LATENCY_BENCHMARK_PATH, "r", encoding="utf-8") as fp:
+            data = json.load(fp)
+        for entry in data.get("results", []):
+            key = PERF_LATENCY_ALIASES.get(entry.get("model"), entry.get("model"))
+            out[key] = {
+                "latency_ms": entry.get("latency_ms"),
+                "throughput": entry.get("throughput"),
+                "gpu": entry.get("gpu"),
+            }
+    except Exception:
+        pass
+    return out
+
+
+def _config_metrics(model_key: str) -> dict:
+    """Model config JSON'undan normalize metrikler (RF ve XGB yapılarını destekler)."""
+    import json
+    fname = PERF_CONFIG_FILES.get(model_key)
+    if not fname:
+        return {}
+    try:
+        with open(os.path.join(PROJECT_ROOT, "models", fname), "r", encoding="utf-8") as fp:
+            cfg = json.load(fp)
+    except Exception:
+        return {}
+    tm = cfg.get("test_metrics", {}) or {}
+    result = {
+        "accuracy": tm.get("accuracy"),
+        "macro_precision": tm.get("macro_precision"),
+        "macro_recall": tm.get("macro_recall"),
+        "macro_f1": tm.get("macro_f1"),
+        "macro_roc_auc": tm.get("macro_roc_auc"),
+        "hyperparameters": cfg.get("hyperparameters"),
+        "training_date": cfg.get("training_date"),
+        "source": "config",
+    }
+    per_class = cfg.get("per_class_metrics") or tm.get("per_class") or {}
+    roc_pc = cfg.get("per_class_roc_auc") or tm.get("roc_auc_per_class") or {}
+    norm_pc = {}
+    if isinstance(per_class, dict):
+        for cls, m in per_class.items():
+            if isinstance(m, dict):
+                norm_pc[cls] = {
+                    "precision": m.get("precision"), "recall": m.get("recall"),
+                    "f1": m.get("f1") or m.get("f1-score") or m.get("f1_score"),
+                    "roc_auc": roc_pc.get(cls) if isinstance(roc_pc, dict) else None,
+                }
+    result["per_class"] = norm_pc
+    return result
+
+
+def parse_classification_report(rel_path: str) -> dict:
+    """Özel formatlı classification_report.txt -> normalize metrikler."""
+    import re
+    try:
+        with open(os.path.join(PROJECT_ROOT, rel_path), "r", encoding="utf-8", errors="replace") as fp:
+            text = fp.read()
+    except Exception:
+        return {}
+    res = {"source": "rapor", "per_class": {}}
+    m = re.search(r"Accuracy:\s*([\d.]+)", text)
+    if m:
+        res["accuracy"] = float(m.group(1))
+    mblock = re.search(r"Macro Average:(.*?)(?:Weighted Average:|Confusion Matrix:|=====|$)", text, re.S)
+    if mblock:
+        b = mblock.group(1)
+        for key, pat in [("macro_precision", r"Precision:\s*([\d.]+)"),
+                         ("macro_recall", r"Recall:\s*([\d.]+)"),
+                         ("macro_f1", r"F1-Score:\s*([\d.]+)")]:
+            mm = re.search(pat, b)
+            if mm:
+                res[key] = float(mm.group(1))
+    for cm in re.finditer(
+        r"([A-Za-z][\w ]*?) \(Class \d+\):\s*Precision:\s*([\d.]+).*?Recall:\s*([\d.]+).*?F1-Score:\s*([\d.]+)",
+        text, re.S,
+    ):
+        res["per_class"][cm.group(1).strip()] = {
+            "precision": float(cm.group(2)), "recall": float(cm.group(3)),
+            "f1": float(cm.group(4)), "roc_auc": None,
+        }
+    return res
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_model_performance() -> dict:
+    """Tüm modeller için birleşik performans: config/rapor metrikleri + latency."""
+    latency = load_latency_benchmark()
+    perf = {}
+    for key in PERF_MODELS:
+        metrics = _config_metrics(key)
+        if not metrics.get("macro_f1") and key in PERF_REPORT_FILES:
+            parsed = parse_classification_report(PERF_REPORT_FILES[key])
+            if parsed.get("macro_f1") or parsed.get("accuracy"):
+                metrics = parsed
+        if not metrics.get("macro_f1") and not metrics.get("accuracy") and key in PERF_REFERENCE:
+            metrics = {**PERF_REFERENCE[key], "source": "referans", "per_class": {}}
+        lat = latency.get(key, {})
+        metrics["latency_ms"] = lat.get("latency_ms")
+        metrics["throughput"] = lat.get("throughput")
+        metrics["gpu"] = lat.get("gpu")
+        metrics.setdefault("per_class", {})
+        perf[key] = metrics
+    return perf
+
+
+def render_perf_comparison_table(perf: dict) -> pd.DataFrame:
+    st.markdown("##### 📋 Model Karşılaştırma Tablosu")
+    rows = []
+    for key in PERF_MODELS:
+        m = perf.get(key, {})
+        rows.append({
+            "Model": key,
+            "Doğruluk": m.get("accuracy"),
+            "Makro F1": m.get("macro_f1"),
+            "Makro ROC-AUC": m.get("macro_roc_auc"),
+            "Gecikme (ms)": m.get("latency_ms"),
+            "Verim (örnek/sn)": m.get("throughput"),
+            "Kaynak": m.get("source", "—"),
+        })
+    df = pd.DataFrame(rows)
+    disp = df.copy()
+    for c in ["Doğruluk", "Makro F1", "Makro ROC-AUC"]:
+        disp[c] = df[c].apply(lambda v: f"{v*100:.2f}%" if pd.notna(v) else "—")
+    disp["Gecikme (ms)"] = df["Gecikme (ms)"].apply(lambda v: f"{v:.4f}" if pd.notna(v) else "—")
+    disp["Verim (örnek/sn)"] = df["Verim (örnek/sn)"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
+    st.dataframe(disp, width="stretch", hide_index=True)
+    st.caption(
+        "Kaynak: RF/XGBoost = model config; LSTM/BiLSTM = sınıflandırma raporu; "
+        "hız = latency_benchmark.json; 'referans' = proje değerlendirme özeti."
+    )
+    return df
+
+
+def render_perf_comparison_charts(df: pd.DataFrame):
+    c1, c2 = st.columns(2)
+    with c1:
+        f1df = df.dropna(subset=["Makro F1"]).sort_values("Makro F1")
+        if not f1df.empty:
+            fig = px.bar(f1df, x="Makro F1", y="Model", orientation="h",
+                         color="Makro F1", color_continuous_scale="Tealgrn",
+                         title="Makro F1 (yüksek = iyi)")
+            fig.update_layout(height=320, paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9",
+                              plot_bgcolor="rgba(255,255,255,0.05)", coloraxis_showscale=False,
+                              xaxis=dict(tickformat=".0%"), yaxis=dict(title=None),
+                              margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.info("Karşılaştırılacak F1 verisi yok.")
+    with c2:
+        tdf = df.dropna(subset=["Verim (örnek/sn)", "Makro F1"])
+        if not tdf.empty:
+            fig = px.scatter(tdf, x="Verim (örnek/sn)", y="Makro F1", text="Model",
+                             log_x=True, title="Hız ↔ Doğruluk dengesi")
+            fig.update_traces(textposition="top center", marker=dict(size=13, color="#58a6ff"))
+            fig.update_layout(height=320, paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9",
+                              plot_bgcolor="rgba(255,255,255,0.05)", yaxis=dict(tickformat=".0%"),
+                              xaxis=dict(title="Verim (örnek/sn, log)"),
+                              margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.info("Hız/doğruluk dengesi için yeterli veri yok.")
+
+
+def render_perf_model_detail(perf: dict, model_key: str):
+    m = perf.get(model_key, {})
+    st.markdown(f"##### 🔬 {model_key} — Ayrıntı")
+    cols = st.columns(4)
+    cols[0].metric("Doğruluk", f"{m['accuracy']*100:.2f}%" if m.get("accuracy") else "—")
+    cols[1].metric("Makro F1", f"{m['macro_f1']*100:.2f}%" if m.get("macro_f1") else "—")
+    cols[2].metric("Makro ROC-AUC", f"{m['macro_roc_auc']*100:.2f}%" if m.get("macro_roc_auc") else "—")
+    cols[3].metric("Verim", f"{m['throughput']:,.0f}/sn" if m.get("throughput") else "—")
+
+    pc = m.get("per_class") or {}
+    rows = []
+    for cls, vals in pc.items():
+        for label, val in [("Kesinlik", vals.get("precision")), ("Duyarlılık", vals.get("recall")), ("F1", vals.get("f1"))]:
+            if val is not None:
+                rows.append({"Sınıf": _perf_cls_label(cls), "Metrik": label, "Değer": val})
+    if rows:
+        pcdf = pd.DataFrame(rows)
+        fig = px.bar(pcdf, x="Sınıf", y="Değer", color="Metrik", barmode="group",
+                     title="Sınıf Bazlı Metrikler")
+        fig.update_layout(height=320, paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9",
+                          plot_bgcolor="rgba(255,255,255,0.05)",
+                          yaxis=dict(tickformat=".0%", range=[0, 1]),
+                          xaxis=dict(title=None), margin=dict(l=10, r=10, t=40, b=10),
+                          legend=dict(orientation="h", y=-0.2, x=0.5, xanchor="center"))
+        st.plotly_chart(fig, width="stretch")
+    else:
+        st.info("Bu model için sınıf bazlı metrik dosyada bulunmuyor.")
+
+    hp = m.get("hyperparameters")
+    if hp:
+        with st.expander("Hiperparametreler"):
+            st.json(hp)
+    src = m.get("source")
+    if src:
+        extra = f" · Eğitim: {m['training_date']}" if m.get("training_date") else ""
+        gpu = f" · {m['gpu']}" if m.get("gpu") else ""
+        st.caption(f"Metrik kaynağı: {src}{extra}{gpu}")
+
+
 st.sidebar.markdown('<p class="soc-header">SOC Kontrol Paneli</p>', unsafe_allow_html=True)
 
 # 1. Durum LED'leri
@@ -1735,11 +1976,12 @@ st.markdown("---")
 # ---------------------------------------------------------------------------
 # BEŞ SEKMELİ DÜZEN
 # ---------------------------------------------------------------------------
-tab_monitor, tab_map, tab_logs, tab_xai, tab_admin = st.tabs([
+tab_monitor, tab_map, tab_logs, tab_xai, tab_perf, tab_admin = st.tabs([
     "🖥️ Canlı İzleme",
     "🗺️ Tehdit Haritası",
     "📋 Olay Kayıtları",
     "🧠 XAI Açıklayıcı",
+    "📊 Model Performansı",
     "⚙️ Yönetim & Yanıt",
 ])
 
@@ -1858,7 +2100,26 @@ with tab_xai:
     st.markdown("---")
     render_xai_shap_explanation(live_df, xai_selected_row)
 
-# ── Sekme 5: Yönetim & Yanıt ────────────────────────────────────────────────
+# ── Sekme 5: Model Performansı ──────────────────────────────────────────────
+with tab_perf:
+    st.markdown("#### 📊 Model Performansı & Karşılaştırma")
+    st.caption(
+        "Eğitim/değerlendirme sonuçları: 5 modelin doğruluk, F1, ROC-AUC ve hız karşılaştırması "
+        "ile seçili model için sınıf bazlı ayrıntılar."
+    )
+    perf_data = load_model_performance()
+    perf_df = render_perf_comparison_table(perf_data)
+    st.markdown("---")
+    render_perf_comparison_charts(perf_df)
+    st.markdown("---")
+    _perf_default = selected_model if selected_model in PERF_MODELS else PERF_MODELS[0]
+    detail_model = st.selectbox(
+        "Model detayı seç", PERF_MODELS,
+        index=PERF_MODELS.index(_perf_default), key="perf_detail_model",
+    )
+    render_perf_model_detail(perf_data, detail_model)
+
+# ── Sekme 6: Yönetim & Yanıt ────────────────────────────────────────────────
 with tab_admin:
     st.markdown("#### ⚙️ Yönetim & Yanıt")
     st.info("🚧 **Yapım aşamasında (Sprint 4)** — Karar eşiği yönetimi, sistem olay zaman tüneli, servis sağlığı ve otomatik yanıt kuralları.")
