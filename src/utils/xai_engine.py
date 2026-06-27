@@ -8,7 +8,9 @@ from typing import Iterable, List, Sequence
 import joblib
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# parents[2] = repo kökü (src/utils/xai_engine.py → repo/). Artefaktlar repo/models'de;
+# model_registry ve dashboard ile tutarlı. (parents[1]=src yanlıştı: src/models kaynak kodu.)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXPLAINER_PATH = PROJECT_ROOT / "models" / "shap_explainer.pkl"
 TOP_FEATURES_PATH = PROJECT_ROOT / "models" / "top_20_features.json"
 
@@ -54,11 +56,22 @@ def explain_attack(
     feature_names = list(feature_names)
     vector = np.asarray(input_vector, dtype=np.float64).reshape(1, -1)
 
-    shap_values = explainer(vector)
-    if isinstance(shap_values, list):
-        attack_values = shap_values[attack_class_index][0]
-    else:
-        attack_values = shap_values[0]
+    shap_output = explainer(vector)
+
+    # SHAP çıktısını ilgili saldırı sınıfı için 1B (öznitelik başına) diziye indirge.
+    # Hem eski liste API'sini hem yeni Explanation/ndarray API'sini ve çok sınıflı
+    # (n_örnek, n_öznitelik, n_sınıf) biçimini destekler.
+    if isinstance(shap_output, list):  # eski API: sınıf başına ayrı diziler
+        arr = np.asarray(shap_output[attack_class_index], dtype=np.float64)
+    else:  # Explanation veya ndarray
+        arr = np.asarray(getattr(shap_output, "values", shap_output), dtype=np.float64)
+
+    if arr.ndim >= 2 and arr.shape[0] == 1:  # tek örnek boyutunu düşür: (1, ...) -> (...)
+        arr = arr[0]
+    if arr.ndim == 2:  # çok sınıflı: (n_öznitelik, n_sınıf) -> ilgili sınıf sütunu
+        class_idx = attack_class_index if attack_class_index < arr.shape[1] else -1
+        arr = arr[:, class_idx]
+    attack_values = np.ravel(arr)
 
     if len(feature_names) != len(attack_values):
         raise ValueError("Feature names count does not match SHAP contributions")

@@ -1,0 +1,24 @@
+{
+  "top_features": [
+    "Bwd Packet Length Std",
+    "Packet Length Mean",
+    "Average Packet Size",
+    "Packet Length Std",
+    "Avg Bwd Segment Size",
+    "Bwd Packet Length Mean",
+    "Bwd Packets/s",
+    "Subflow Fwd Packets",
+    "Packet Length Variance",
+    "Max Packet Length",
+    "Total Fwd Packets",
+    "Bwd Packet Length Max",
+    "Total Length of Fwd Packets",
+    "Total Backward Packets",
+    "Fwd IAT Max",
+    "Fwd IAT Mean",
+    "Fwd IAT Std",
+    "Idle Min",
+    "Subflow Bwd Bytes",
+    "Total Length of Bwd Packets"
+  ]
+}
