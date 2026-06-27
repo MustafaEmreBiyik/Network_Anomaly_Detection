@@ -41,6 +41,20 @@ def _remove_block_record(ip_address: str):
         conn.execute("DELETE FROM blocked_ips WHERE ip = ?", (ip_address,))
         conn.commit()
 
+
+def get_block_records():
+    """blocked_ips tablosundaki aktif engel kayitlarini [{ip, blocked_at}] dondurur."""
+    try:
+        with _get_fw_connection() as conn:
+            rows = conn.execute(
+                "SELECT ip, blocked_at FROM blocked_ips ORDER BY blocked_at DESC"
+            ).fetchall()
+        return [{"ip": r[0], "blocked_at": r[1]} for r in rows]
+    except Exception as exc:
+        print(f"[HATA] blocked_ips okuma hatasi: {exc}")
+        return []
+
+
 def get_os():
     return platform.system()
 
