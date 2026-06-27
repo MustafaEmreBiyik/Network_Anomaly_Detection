@@ -875,7 +875,7 @@ def render_attack_distribution(df: pd.DataFrame):
         font_color="#c9d1d9",
         margin=dict(l=20, r=20, t=20, b=10),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_severity_timeline(live_df: pd.DataFrame, logs_df: pd.DataFrame):
@@ -954,7 +954,7 @@ def render_severity_timeline(live_df: pd.DataFrame, logs_df: pd.DataFrame):
         yaxis=dict(title=t("Olay / dk"), rangemode="tozero", gridcolor="rgba(255,255,255,0.08)"),
         hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_time_series(df: pd.DataFrame):
@@ -1521,14 +1521,14 @@ def render_batch_log_actions(selected_rows):
             t("Seçilileri Engelle"),
             key="batch_block_selected",
             disabled=not has_selection or not confirm,
-            use_container_width=True,
+            width="stretch",
         )
     with col_unblock:
         unblock_clicked = st.button(
             t("Seçililerin Engelini Kaldır"),
             key="batch_unblock_selected",
             disabled=not has_selection or not confirm,
-            use_container_width=True,
+            width="stretch",
         )
 
     if block_clicked:
@@ -1578,7 +1578,7 @@ def render_firewall_viewer():
         with cols[1]:
             st.caption(t("Yön: {d}").format(d=direction))
         with cols[2]:
-            if st.button(t("Engeli Kaldır"), key=f"firewall_unblock_{ip_address}", use_container_width=True):
+            if st.button(t("Engeli Kaldır"), key=f"firewall_unblock_{ip_address}", width="stretch"):
                 ok = unblock_ip(ip_address)
                 if ok:
                     st.session_state["firewall_viewer_toast"] = {
@@ -2115,7 +2115,7 @@ def render_admin_threshold():
         t("Eşik (Canlı İzleme referans çizgisi)"), 0.0, 1.0, float(current), 0.01,
         key="admin_threshold_slider",
     )
-    if st.button(t("Eşiği Kaydet"), key="admin_save_threshold", use_container_width=True):
+    if st.button(t("Eşiği Kaydet"), key="admin_save_threshold", width="stretch"):
         if save_model_threshold(new_val):
             st.toast(t("Eşik kaydedildi: {v:.2f}").format(v=new_val))
         else:
@@ -2446,7 +2446,7 @@ with tab_logs:
                 data=csv_bytes,
                 file_name=f"olay_kayitlari_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
         with export_col_pdf:
             if pdf_bytes is None:
@@ -2454,7 +2454,7 @@ with tab_logs:
                     t("PDF Dışa Aktar"),
                     disabled=True,
                     help=t("PDF dışa aktarımı için `reportlab` paketini kurun."),
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.download_button(
@@ -2462,7 +2462,7 @@ with tab_logs:
                     data=pdf_bytes,
                     file_name=f"olay_raporu_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
                     mime="application/pdf",
-                    use_container_width=True,
+                    width="stretch",
                 )
         st.markdown("---")
         render_batch_log_actions(selected_rows)
