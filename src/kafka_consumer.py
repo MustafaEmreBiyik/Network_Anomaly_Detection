@@ -32,9 +32,17 @@ sys.path.append(os.path.join(CURRENT_DIR, "utils"))
 from model_registry import MODEL_REGISTRY, LIVE_MODELS, DEFAULT_MODEL
 
 try:
-    from config import TOP_FEATURES
+    from config import (
+        TOP_FEATURES,
+        ESCALATION_WINDOW_SECONDS,
+        ESCALATION_SUSPICIOUS_THRESHOLD,
+        ESCALATION_BLOCK_THRESHOLD,
+    )
 except ImportError:
     TOP_FEATURES = []
+    ESCALATION_WINDOW_SECONDS = int(os.getenv("ESCALATION_WINDOW_SECONDS", "60"))
+    ESCALATION_SUSPICIOUS_THRESHOLD = int(os.getenv("ESCALATION_SUSPICIOUS_THRESHOLD", "2"))
+    ESCALATION_BLOCK_THRESHOLD = int(os.getenv("ESCALATION_BLOCK_THRESHOLD", "4"))
 
 try:
     from db_manager import log_attack, log_heartbeat, log_pipeline_event
@@ -70,7 +78,7 @@ KAFKA_TOPIC = 'network-traffic'
 KAFKA_GROUP_ID = os.getenv("KAFKA_GROUP_ID", "nids-consumer-group-v2")
 KAFKA_AUTO_OFFSET_RESET = os.getenv("KAFKA_AUTO_OFFSET_RESET", "latest")
 WHITELIST_IPS = os.getenv("WHITELIST_IPS", "192.168.1.1,127.0.0.1,0.0.0.0,localhost").split(",")
-ESCALATION_WINDOW_SECONDS = int(os.getenv("ESCALATION_WINDOW_SECONDS", "60"))
+# ESCALATION_* sabitleri config.py'den (merkezi) import ediliyor.
 # Temel meta/karar sütunları + canlı SHAP açıklaması için 20 ÖLÇEKLİ öznitelik.
 # Öznitelikler, modelin gördüğü ölçekli giriş uzayında yazılır; böylece panodaki
 # xai_engine.explain_attack bunları doğrudan SHAP açıklayıcıya besleyebilir.
@@ -127,9 +135,9 @@ def _get_escalation(src_ip: str) -> tuple[str, int]:
     recent.append(now)
     _attack_history[src_ip] = recent
     count = len(recent)
-    if count >= 4:
+    if count >= ESCALATION_BLOCK_THRESHOLD:
         return "BLOCKED", count
-    if count >= 2:
+    if count >= ESCALATION_SUSPICIOUS_THRESHOLD:
         return "SUSPICIOUS", count
     return "ALERT", count
 

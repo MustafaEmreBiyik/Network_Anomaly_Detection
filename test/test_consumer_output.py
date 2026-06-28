@@ -79,7 +79,7 @@ def test_process_message_returns_true():
         os.unlink(tmp)
 
 
-def test_csv_has_16_columns():
+def test_csv_has_all_schema_columns():
     with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
         tmp = f.name
     try:
@@ -87,7 +87,10 @@ def test_csv_has_16_columns():
         msg_bytes = _make_v2_message(kc.SCALER)
         kc.process_message(msg_bytes)
         df = pd.read_csv(tmp)
-        assert len(df.columns) == 16, f"Expected 16 v2 columns, got {list(df.columns)}"
+        # Sabit sayi yerine consumer'in kendi semasiyla birebir karsilastir
+        assert list(df.columns) == list(kc.CSV_HEADER_COLUMNS), (
+            f"CSV sutunlari CSV_HEADER_COLUMNS ile birebir eslesmeli; alinan: {list(df.columns)}"
+        )
     finally:
         os.unlink(tmp)
 

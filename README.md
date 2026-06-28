@@ -22,7 +22,10 @@ This project implements a production-ready **Network Intrusion Detection System 
 
 **Models:** Random Forest · XGBoost (GPU) · Decision Tree · BiLSTM · LSTM  
 **Dataset:** [CICIDS 2017](https://www.unb.ca/cic/datasets/ids-2017.html) — 2.83M labeled network flows  
-**Authors:** Betül Danışmaz · Mustafa Emre Bıyık
+**Authors:** Betül Danışmaz · Mustafa Emre Bıyık  
+**Advisor:** Dr. Necip Gözüaçık
+
+**Paper:** [IEEE SIU 2026](https://siu2026.pirireis.edu.tr/) - Multi-Class Network Intrusion Detection: Machine and Deep Learning Benchmark with Live Stream Deployment 
 
 ---
 
@@ -38,6 +41,7 @@ This project implements a production-ready **Network Intrusion Detection System 
 - [Configuration](#configuration)
 - [Development](#development)
 - [Dependencies](#dependencies)
+- [Publications](#publications)
 - [License](#license)
 - [Acknowledgements](#acknowledgements)
 
@@ -701,6 +705,14 @@ PyCaret was used to benchmark multiple algorithms on binary classification:
 
 ---
 
+## Publications
+
+| Article | Author | Platform | Topic |
+| :------ | :----- | :------- | :---- |
+| [NIDS v1: The Hidden Data Leakage Problem in CICIDS2017 and How Per-File Stratified Splitting Solves It](https://medium.com/@danismazbetul3/nids-v1-the-hidden-data-leakage-problem-in-cicids2017-and-how-per-file-stratified-splitting-6d9984194d93) | Betül Danışmaz | Medium | Data leakage in CICIDS2017 and the per-file stratified splitting methodology used in this project |
+
+---
+
 ## License
 
 This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for details.
@@ -708,6 +720,10 @@ This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for d
 ---
 
 ## Acknowledgements
+
+### Advisor
+
+Special thanks to **Dr. Necip Gözüaçık** for advising and guiding this project.
 
 ### Dataset
 
@@ -732,7 +748,8 @@ This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for d
 
 <div align="center">
 
-**Betül Danışmaz · Mustafa Emre Bıyık**
+**Betül Danışmaz · Mustafa Emre Bıyık**  
+Advisor: Dr. Necip Gözüaçık
 
 [GitHub Repository](https://github.com/betuldanismaz/Network_Anomaly_Detection)
 

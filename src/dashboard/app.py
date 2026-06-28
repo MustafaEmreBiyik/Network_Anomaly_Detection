@@ -67,6 +67,18 @@ PARENT_DIR = os.path.dirname(CURRENT_DIR)
 PROJECT_ROOT = os.path.dirname(PARENT_DIR)
 if PARENT_DIR not in sys.path:
     sys.path.append(PARENT_DIR)
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
+# Saf veri-dönüşüm yardımcıları ayrı modülde (Streamlit'siz birim testi için)
+from transforms import (
+    calculate_avg_confidence,
+    filter_dataframe,
+    find_first_present_column,
+    parse_classification_report_text,
+)
+# Merkezi tunable sabitler (.env ile override edilebilir)
+from config import BUCKET_FREQUENCY, ESCALATION_WINDOW_SECONDS
 
 try:
     from utils.db_manager import fetch_logs, log_heartbeat, fetch_recent_events, get_service_health
@@ -123,7 +135,7 @@ SCALER_PATH = os.path.join(PROJECT_ROOT, "models", "scaler_lstm.pkl")
 SCALER_PATH_FALLBACK = os.path.join(PROJECT_ROOT, "models", "scaler.pkl")
 ACTIVE_MODEL_PATH = os.path.join(PROJECT_ROOT, "data", "active_model.txt")
 THRESHOLD_PATH = os.path.join(PROJECT_ROOT, "models", "threshold.txt")
-BUCKET_FREQUENCY = "10s"
+# BUCKET_FREQUENCY config.py'den (merkezi) import ediliyor.
 
 CLASS_NAMES = {0: "Benign", 1: "Volumetric", 2: "Semantic"}
 CLASS_COLORS = {"Benign": "#00CC66", "Volumetric": "#FF4B4B", "Semantic": "#FFA500"}
@@ -463,75 +475,361 @@ log_heartbeat("dashboard", "alive")
 # ---------------------------------------------------------------------------
 st.markdown("""
 <style>
+  /* ── Tokens ──────────────────────────────────────────────────────────── */
+  :root {
+    --color-bg-base:       #0a0e17;
+    --color-bg-surface:    #0d1220;
+    --color-bg-card:       rgba(255,255,255,0.04);
+    --color-border:        rgba(255,255,255,0.08);
+    --color-border-accent: rgba(88,166,255,0.25);
+    --color-text-primary:  #c9d1d9;
+    --color-text-muted:    #9ca5b0;
+    --color-text-link:     #58a6ff;
+    --color-safe:          #00CC66;
+    --color-low:           #3498db;
+    --color-medium:        #FFD700;
+    --color-high:          #FFA500;
+    --color-critical:      #FF4B4B;
+    --radius-sm: 6px;  --radius-md: 12px;  --radius-lg: 16px;
+    --shadow-card:  0 2px 8px rgba(0,0,0,0.4);
+    --shadow-hover: 0 8px 32px rgba(88,166,255,0.12);
+    --space-1:4px; --space-2:8px; --space-3:12px;
+    --space-4:16px; --space-5:20px; --space-6:24px;
+    --font-xs:0.72rem; --font-sm:0.82rem; --font-base:0.92rem;
+    --font-lg:1.05rem; --font-xl:1.4rem; --font-2xl:1.8rem;
+  }
+
+  /* ── Base ────────────────────────────────────────────────────────────── */
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
-
   html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+  [data-testid="stAppViewContainer"] { background: var(--color-bg-base); color: var(--color-text-primary); }
+  [data-testid="stSidebar"]          { background: var(--color-bg-surface); border-right: 1px solid var(--color-border); }
 
-  [data-testid="stAppViewContainer"] { background: #0a0e17; color: #c9d1d9; }
-  [data-testid="stSidebar"] { background: #0d1220; border-right: 1px solid #1e2d45; }
+  /* ── Typography scale ────────────────────────────────────────────────── */
+  .text-xs    { font-size: var(--font-xs); }
+  .text-sm    { font-size: var(--font-sm); }
+  .text-base  { font-size: var(--font-base); }
+  .text-lg    { font-size: var(--font-lg); }
+  .text-xl    { font-size: var(--font-xl); }
+  .text-2xl   { font-size: var(--font-2xl); }
+  .text-muted { color: var(--color-text-muted); }
+  .text-accent{ color: var(--color-text-link); }
+  .text-danger{ color: var(--color-critical); }
+  .text-safe  { color: var(--color-safe); }
+  .fw-600     { font-weight: 600; }
+  .fw-700     { font-weight: 700; }
 
-  /* Metric cards */
-  div[data-testid="metric-container"], .kpi-card { 
-    background: rgba(255,255,255,0.04); 
-    border: 1px solid rgba(255,255,255,0.08); 
-    border-radius: 12px; 
-    backdrop-filter: blur(12px); 
-    padding: 20px; 
-    transition: transform .2s, box-shadow .2s; 
+  /* ── Chart cards ─────────────────────────────────────────────────────── */
+  .chart-card {
+    background: var(--color-bg-card);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--space-5);
+    margin-bottom: var(--space-4);
+    box-shadow: var(--shadow-card);
+    animation: fadeIn 0.3s ease both;
   }
-  div[data-testid="metric-container"]:hover, .kpi-card:hover { 
-    transform: translateY(-3px); 
-    box-shadow: 0 8px 32px rgba(0,200,255,0.1); 
+  .chart-card__header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: var(--space-3);
+  }
+  .chart-card__title { font-size: var(--font-base); font-weight: 600; color: var(--color-text-primary); }
+  .chart-card__badge {
+    background: rgba(88,166,255,0.12); color: var(--color-text-link);
+    border: 1px solid var(--color-border-accent);
+    border-radius: 999px; padding: 2px 10px;
+    font-size: var(--font-xs); font-weight: 700; letter-spacing: 0.05em;
+  }
+  .chart-card__badge--live  { background: rgba(0,204,102,0.12); color: var(--color-safe); border-color: rgba(0,204,102,0.3); }
+  .chart-card__badge--alert { background: rgba(255,75,75,0.14); color: var(--color-critical); border-color: rgba(255,75,75,0.3); }
+
+  /* ── Section headers ─────────────────────────────────────────────────── */
+  .section-header {
+    display: flex; align-items: center; gap: var(--space-3);
+    border-left: 3px solid var(--color-text-link);
+    padding-left: var(--space-4);
+    margin: var(--space-5) 0 var(--space-4) 0;
+  }
+  .section-icon  { font-size: 1.15rem; }
+  .section-title { font-size: var(--font-lg); font-weight: 700; color: var(--color-text-primary); line-height: 1.2; }
+  .section-sub   { font-size: var(--font-xs); color: var(--color-text-muted); margin-top: 2px; }
+
+  /* ── KPI cards ───────────────────────────────────────────────────────── */
+  .kpi-card {
+    background: var(--color-bg-card);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--space-5) var(--space-4);
+    transition: transform 0.2s, box-shadow 0.2s;
+    box-shadow: var(--shadow-card);
+    animation: fadeIn 0.3s ease both;
+    min-height: 110px;
+  }
+  .kpi-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-hover); }
+  .kpi-card__label {
+    font-size: var(--font-xs); font-weight: 700; color: var(--color-text-muted);
+    letter-spacing: 0.08em; text-transform: uppercase;
+    margin-bottom: var(--space-2);
+    display: flex; align-items: center; gap: var(--space-2);
+  }
+  .kpi-card__value  { font-size: var(--font-2xl); font-weight: 700; color: var(--color-text-primary); line-height: 1.1; margin-bottom: var(--space-1); }
+  .kpi-card__delta  { font-size: var(--font-sm); font-weight: 600; display: inline-flex; align-items: center; gap: 3px; }
+  .kpi-card__delta--up      { color: var(--color-safe); }
+  .kpi-card__delta--down    { color: var(--color-critical); }
+  .kpi-card__delta--neutral { color: var(--color-text-muted); }
+
+  /* ── Page header ─────────────────────────────────────────────────────── */
+  .page-header {
+    background: linear-gradient(90deg, rgba(88,166,255,0.07) 0%, transparent 70%);
+    border-bottom: 1px solid var(--color-border-accent);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    padding: var(--space-5) var(--space-6);
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: var(--space-4);
+    animation: fadeIn 0.4s ease both;
+  }
+  .page-header__brand { font-size: var(--font-2xl); font-weight: 700; color: var(--color-text-link); letter-spacing: -0.5px; }
+  .page-header__sub   { font-size: var(--font-sm); color: var(--color-text-muted); margin-top: 4px; }
+  .page-header__right { display: flex; align-items: center; gap: var(--space-3); text-align: right; }
+  .page-header__clock { font-size: var(--font-sm); color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+  .live-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--color-safe); box-shadow: 0 0 0 0 rgba(0,204,102,0.4);
+    animation: livePulse 2s infinite;
   }
 
-  /* Critical Alerts */
-  @keyframes criticalPulse { 
-    0%,100% { box-shadow: 0 0 0 0 rgba(255,75,75,0.4);} 
-    50% { box-shadow: 0 0 0 12px rgba(255,75,75,0);} 
+  /* ── Status bar ──────────────────────────────────────────────────────── */
+  .status-bar {
+    display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-4);
+    background: var(--color-bg-card); border: 1px solid var(--color-border);
+    border-radius: var(--radius-md); padding: var(--space-3) var(--space-5);
+    margin-bottom: var(--space-4);
   }
-  .alert-critical { 
-    animation: criticalPulse 1.5s infinite; 
-    border: 1px solid #ff4b4b !important; 
-    border-radius: 12px;
+  .status-item { display: flex; align-items: center; gap: var(--space-2); font-size: var(--font-sm); color: var(--color-text-primary); white-space: nowrap; }
+  .status-dot  { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .status-dot--ok   { background: var(--color-safe); }
+  .status-dot--warn { background: var(--color-medium); }
+  .status-dot--err  { background: var(--color-critical); }
+  .status-divider   { width: 1px; height: 18px; background: var(--color-border); margin: 0 var(--space-2); }
+  .status-stats     { margin-left: auto; font-size: var(--font-xs); color: var(--color-text-muted); display: flex; gap: var(--space-4); }
+
+  /* ── Badges ──────────────────────────────────────────────────────────── */
+  .badge     { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: var(--font-xs); font-weight: 700; letter-spacing: 0.04em; }
+  .badge-ok  { background: rgba(0,204,102,0.15);  color: var(--color-safe);     border: 1px solid rgba(0,204,102,0.3); }
+  .badge-warn{ background: rgba(255,215,0,0.12);  color: var(--color-medium);   border: 1px solid rgba(255,215,0,0.3); }
+  .badge-err { background: rgba(255,75,75,0.14);  color: var(--color-critical); border: 1px solid rgba(255,75,75,0.3); }
+  .badge-info{ background: rgba(88,166,255,0.12); color: var(--color-text-link);border: 1px solid var(--color-border-accent); }
+
+  /* ── Alert feed cards ────────────────────────────────────────────────── */
+  .alert-card {
+    display: flex; background: var(--color-bg-card);
+    border: 1px solid var(--color-border); border-radius: var(--radius-md);
+    overflow: hidden; margin-bottom: var(--space-3);
+    animation: slideIn 0.2s ease both;
+    transition: box-shadow 0.2s;
+  }
+  .alert-card:hover { box-shadow: var(--shadow-hover); }
+  .alert-card__accent { width: 4px; flex-shrink: 0; }
+  .alert-card__body   { padding: var(--space-4); flex: 1; }
+  .alert-card__header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: var(--space-2); }
+  .alert-card__ip     { font-size: var(--font-base); font-weight: 700; color: var(--color-text-primary); }
+  .alert-card__time   { font-size: var(--font-xs); color: var(--color-text-muted); margin-top: 2px; }
+  .alert-card__detail { font-size: var(--font-sm); color: var(--color-text-primary); line-height: 1.55; border-top: 1px solid var(--color-border); padding-top: var(--space-2); margin-top: var(--space-2); }
+
+  /* ── Empty states ────────────────────────────────────────────────────── */
+  .empty-state {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: 160px; border: 1px dashed var(--color-border);
+    border-radius: var(--radius-md); padding: var(--space-6); text-align: center;
+    animation: fadeIn 0.3s ease both;
+  }
+  .empty-state__icon  { font-size: 2rem; margin-bottom: var(--space-3); opacity: 0.45; }
+  .empty-state__title { font-size: var(--font-base); font-weight: 600; color: var(--color-text-primary); margin-bottom: var(--space-2); }
+  .empty-state__desc  { font-size: var(--font-sm); color: var(--color-text-muted); max-width: 340px; line-height: 1.55; }
+
+  /* ── Skeleton screens ────────────────────────────────────────────────── */
+  .skeleton-card { background: var(--color-bg-card); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--space-5); animation: fadeIn 0.3s ease both; }
+  .skeleton-line {
+    background: linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.09) 50%, rgba(255,255,255,0.04) 100%);
+    background-size: 200% 100%;
+    animation: shimmer 1.6s infinite;
+    border-radius: var(--radius-sm); height: 14px; margin-bottom: var(--space-3);
   }
 
-  /* Tab bar */
+  /* ── Detection table ─────────────────────────────────────────────────── */
+  .det-table { width: 100%; border-collapse: collapse; font-size: var(--font-sm); }
+  .det-table th {
+    text-align: left; padding: 8px 12px;
+    background: rgba(255,255,255,0.05);
+    color: var(--color-text-muted); font-size: var(--font-xs); font-weight: 700;
+    letter-spacing: 0.05em; text-transform: uppercase;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .det-table td { padding: 7px 12px; border-bottom: 1px solid rgba(255,255,255,0.04); color: var(--color-text-primary); vertical-align: middle; }
+  .det-table tr:last-child td { border-bottom: none; }
+  .det-table tr:hover td { background: rgba(255,255,255,0.03); }
+
+  /* ── Gauge card ──────────────────────────────────────────────────────── */
+  .gauge-card {
+    background: var(--color-bg-card); border: 1px solid var(--color-border);
+    border-radius: var(--radius-md); padding: var(--space-5);
+    box-shadow: var(--shadow-card); animation: fadeIn 0.3s ease both;
+  }
+  .gauge-card--critical { border-color: rgba(255,75,75,0.4) !important; animation: fadeIn 0.3s ease both, criticalPulse 1.5s infinite; }
+
+  /* ── Sidebar ─────────────────────────────────────────────────────────── */
+  .sidebar-section-label {
+    font-size: var(--font-xs); font-weight: 700; color: var(--color-text-muted);
+    letter-spacing: 0.1em; text-transform: uppercase;
+    padding: var(--space-3) 0 var(--space-2) 0;
+    border-bottom: 1px solid var(--color-border); margin-bottom: var(--space-3);
+  }
+  .threat-banner { border-radius: var(--radius-md); padding: var(--space-4); text-align: center; margin-bottom: var(--space-3); }
+  .threat-banner__label  { font-size: var(--font-xs); font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-text-muted); margin-bottom: var(--space-2); }
+  .threat-banner__level  { font-size: var(--font-xl); font-weight: 700; line-height: 1.2; margin-bottom: var(--space-3); }
+  .threat-progress-track { background: rgba(255,255,255,0.08); border-radius: 999px; height: 6px; overflow: hidden; margin-bottom: var(--space-2); }
+  .threat-progress-fill  { height: 100%; border-radius: 999px; transition: width 0.6s ease; }
+  .threat-banner__ts     { font-size: var(--font-xs); color: var(--color-text-muted); }
+  .model-card { background: var(--color-bg-card); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); margin-bottom: var(--space-3); }
+  .model-card__row  { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-1); }
+  .model-card__name { font-size: var(--font-base); font-weight: 700; color: var(--color-text-primary); }
+  .model-card__file { font-size: var(--font-xs); color: var(--color-text-muted); font-family: monospace; }
+  .active-dot { display: inline-flex; align-items: center; gap: 5px; font-size: var(--font-xs); color: var(--color-safe); font-weight: 600; }
+  .active-dot::before { content:''; display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--color-safe); animation: livePulse 2s infinite; }
+  .mini-stats { background: var(--color-bg-card); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); display: flex; justify-content: space-around; text-align: center; margin-bottom: var(--space-3); }
+  .mini-stat__value { font-size: var(--font-xl); font-weight: 700; color: var(--color-text-primary); line-height: 1.1; }
+  .mini-stat__label { font-size: var(--font-xs); color: var(--color-text-muted); margin-top: 2px; }
+
+  /* ── Feature preview cards (XAI / Admin) ─────────────────────────────── */
+  .feature-preview { background: rgba(255,255,255,0.02); border: 1px dashed var(--color-border); border-radius: var(--radius-md); padding: var(--space-5); opacity: 0.7; transition: opacity 0.2s; }
+  .feature-preview:hover { opacity: 0.9; }
+  .feature-preview__icon  { font-size: 1.6rem; margin-bottom: var(--space-3); }
+  .feature-preview__title { font-size: var(--font-base); font-weight: 700; color: var(--color-text-primary); margin-bottom: var(--space-2); }
+  .feature-preview__desc  { font-size: var(--font-sm); color: var(--color-text-muted); line-height: 1.55; margin-bottom: var(--space-3); }
+  .feature-preview__pill  { display: inline-block; background: rgba(88,166,255,0.1); color: var(--color-text-link); border: 1px solid var(--color-border-accent); border-radius: 999px; padding: 2px 10px; font-size: var(--font-xs); font-weight: 700; }
+
+  /* ── Tab bar ─────────────────────────────────────────────────────────── */
   div[data-testid="stTabs"] button[data-baseweb="tab"] {
-    background: transparent;
-    color: #8b949e;
-    border-bottom: 2px solid transparent;
-    font-weight: 600;
-    font-size: 0.85rem;
-    padding: 8px 16px;
-    transition: all 0.2s ease;
+    background: transparent; color: var(--color-text-muted);
+    border-bottom: none !important; border-radius: var(--radius-sm);
+    font-weight: 600; font-size: var(--font-sm); padding: 8px 16px;
+    transition: background 0.15s, color 0.15s; opacity: 0.7;
   }
-  div[data-testid="stTabs"] button[data-baseweb="tab"]:hover {
-    color: #58a6ff;
+  div[data-testid="stTabs"] button[data-baseweb="tab"]:hover { background: rgba(255,255,255,0.05); color: var(--color-text-primary); opacity: 1; }
+  div[data-testid="stTabs"] button[aria-selected="true"]      { background: rgba(88,166,255,0.12) !important; color: var(--color-text-link) !important; opacity: 1; }
+
+  /* ── Plotly / DataFrame polish ───────────────────────────────────────── */
+  .js-plotly-plot { border-radius: var(--radius-sm); }
+  div[data-testid="stDataFrame"] { border-radius: var(--radius-sm); overflow: hidden; }
+  hr { border-color: var(--color-border); }
+
+  /* ── Animations ──────────────────────────────────────────────────────── */
+  @keyframes fadeIn    { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+  @keyframes slideIn   { from { opacity:0; transform:translateX(-8px); } to { opacity:1; transform:none; } }
+  @keyframes shimmer   { 0% { background-position:-200% 0; } 100% { background-position:200% 0; } }
+  @keyframes livePulse { 0% { box-shadow:0 0 0 0 rgba(0,204,102,0.5); } 70% { box-shadow:0 0 0 6px rgba(0,204,102,0); } 100% { box-shadow:0 0 0 0 rgba(0,204,102,0); } }
+  @keyframes criticalPulse { 0%,100% { box-shadow:0 0 0 0 rgba(255,75,75,0.4); } 50% { box-shadow:0 0 0 12px rgba(255,75,75,0); } }
+
+  /* ── Responsive guards ───────────────────────────────────────────────── */
+  @media (max-width: 1100px) { [data-testid="column"] { min-width: 160px !important; } }
+
+  /* ── emre-dev uyumluluk: korunan siniflar ───────────────────────────── */
+  .soc-header { font-size: var(--font-xl); font-weight: 700; color: var(--color-text-link); letter-spacing: -0.5px; }
+  .soc-sub    { color: var(--color-text-muted); font-size: var(--font-sm); }
+  .alert-critical { animation: criticalPulse 1.5s infinite; border: 1px solid var(--color-critical) !important; border-radius: var(--radius-md); }
+  div[data-testid="metric-container"] {
+    background: var(--color-bg-card); border: 1px solid var(--color-border);
+    border-radius: var(--radius-md); backdrop-filter: blur(12px);
+    padding: var(--space-5); transition: transform .2s, box-shadow .2s;
+    box-shadow: var(--shadow-card);
   }
-  div[data-testid="stTabs"] button[aria-selected="true"] {
-    color: #58a6ff !important;
-    border-bottom: 2px solid #58a6ff !important;
-  }
-
-  /* Plotly charts */
-  .js-plotly-plot { border-radius: 10px; }
-
-  /* Dataframe */
-  div[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
-
-  /* Divider */
-  hr { border-color: #21262d; }
-
-  /* Status badges */
-  .badge-ok   { background:#0f5132; color:#75b798; padding:3px 10px; border-radius:20px; font-size:.75rem; font-weight:600; }
-  .badge-warn { background:#5c3f00; color:#e3b341; padding:3px 10px; border-radius:20px; font-size:.75rem; font-weight:600; }
-  .badge-err  { background:#3d0000; color:#ff7b72; padding:3px 10px; border-radius:20px; font-size:.75rem; font-weight:600; }
-
-  /* Header accent */
-  .soc-header { font-size:1.6rem; font-weight:700; color:#58a6ff; letter-spacing:-0.5px; }
-  .soc-sub    { color:#8b949e; font-size:.85rem; }
+  div[data-testid="metric-container"]:hover { transform: translateY(-3px); box-shadow: var(--shadow-hover); }
 </style>
 """, unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# TASARIM HELPER'LARI (betul "dashboard design" / cfcc9bd'den tasindi)
+# ---------------------------------------------------------------------------
+def _apply_chart_defaults(fig):
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(255,255,255,0.03)",
+        font=dict(family="Inter", color="#c9d1d9", size=11),
+        hoverlabel=dict(bgcolor="#1a2235", bordercolor="rgba(255,255,255,0.15)", font_color="#c9d1d9"),
+        legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="rgba(0,0,0,0)"),
+    )
+    fig.update_xaxes(gridcolor="rgba(255,255,255,0.06)", zerolinecolor="rgba(255,255,255,0.1)")
+    fig.update_yaxes(gridcolor="rgba(255,255,255,0.06)", zerolinecolor="rgba(255,255,255,0.1)")
+    return fig
+
+
+def section_header(title: str, subtitle: str = None, icon: str = None):
+    sub_html  = f'<div class="section-sub">{subtitle}</div>' if subtitle else ""
+    icon_html = f'<span class="section-icon">{icon}</span>' if icon else ""
+    st.markdown(
+        f'<div class="section-header">{icon_html}'
+        f'<div><div class="section-title">{title}</div>{sub_html}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_empty_state(title: str, description: str = "", icon: str = "📡"):
+    st.markdown(
+        f"""<div class="empty-state">
+          <div class="empty-state__icon">{icon}</div>
+          <div class="empty-state__title">{title}</div>
+          <div class="empty-state__desc">{description}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_skeleton(lines: int = 3):
+    widths = ["40%", "70%", "55%", "80%", "45%"]
+    html = "".join(
+        f'<div class="skeleton-line" style="width:{widths[i % len(widths)]}"></div>'
+        for i in range(lines)
+    )
+    st.markdown(f'<div class="skeleton-card">{html}</div>', unsafe_allow_html=True)
+
+
+def kpi_card(label: str, value: str, delta: str = None, delta_dir: str = "neutral",
+             accent_color: str = None, icon: str = None):
+    border = f"border-left: 3px solid {accent_color};" if accent_color else ""
+    icon_html = f'<span>{icon}&nbsp;</span>' if icon else ""
+    arrow = "▲" if delta_dir == "up" else ("▼" if delta_dir == "down" else "")
+    delta_html = (
+        f'<div class="kpi-card__delta kpi-card__delta--{delta_dir}">{arrow} {delta}</div>'
+        if delta else ""
+    )
+    st.markdown(
+        f"""<div class="kpi-card" style="{border}">
+          <div class="kpi-card__label">{icon_html}{label}</div>
+          <div class="kpi-card__value">{value}</div>
+          {delta_html}
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def sidebar_section(title: str):
+    st.sidebar.markdown(
+        f'<div class="sidebar-section-label">{title}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def feature_preview_card(icon: str, title: str, description: str, pill: str = "Planned"):
+    st.markdown(
+        f"""<div class="feature-preview">
+          <div class="feature-preview__icon">{icon}</div>
+          <div class="feature-preview__title">{title}</div>
+          <div class="feature-preview__desc">{description}</div>
+          <span class="feature-preview__pill">● {pill}</span>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
 
 # ---------------------------------------------------------------------------
 # DATA LOADING
@@ -630,24 +928,6 @@ def get_system_status() -> dict:
         "live_bridge_status": "active" if data_flowing else ("waiting" if csv_exists and csv_age < 120 else "stopped"),
         "csv_age": csv_age, "csv_exists": csv_exists, "csv_rows": csv_rows, "data_flowing": data_flowing,
     }
-
-
-def calculate_avg_confidence(df: pd.DataFrame) -> float:
-    if df.empty:
-        return 0.0
-    prob_cols = [c for c in df.columns if "prob" in c.lower()]
-    if prob_cols:
-        return df[prob_cols].apply(pd.to_numeric, errors="coerce").max(axis=1).mean()
-    if "confidence_score" in df.columns:
-        return pd.to_numeric(df["confidence_score"], errors="coerce").mean()
-    return 0.0
-
-
-def find_first_present_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
-    for candidate in candidates:
-        if candidate in df.columns:
-            return candidate
-    return None
 
 
 def format_protocol_label(value) -> str:
@@ -787,7 +1067,7 @@ def render_risk_gauge(df: pd.DataFrame):
     ))
     fig.update_layout(height=240, margin=dict(l=20, r=20, t=50, b=10),
                       paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9")
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
     
     if div_class:
         st.markdown('</div>', unsafe_allow_html=True)
@@ -815,7 +1095,7 @@ def render_class_distribution(df: pd.DataFrame):
                        font_size=14, showarrow=False, font_color="#c9d1d9")
     fig.update_layout(height=320, paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9",
                       legend=dict(orientation="h", y=-0.15, x=0.5, xanchor="center"))
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
 
 
 def render_attack_distribution(df: pd.DataFrame):
@@ -875,7 +1155,7 @@ def render_attack_distribution(df: pd.DataFrame):
         font_color="#c9d1d9",
         margin=dict(l=20, r=20, t=20, b=10),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
 
 
 def render_severity_timeline(live_df: pd.DataFrame, logs_df: pd.DataFrame):
@@ -954,7 +1234,7 @@ def render_severity_timeline(live_df: pd.DataFrame, logs_df: pd.DataFrame):
         yaxis=dict(title=t("Olay / dk"), rangemode="tozero", gridcolor="rgba(255,255,255,0.08)"),
         hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
 
 
 def render_time_series(df: pd.DataFrame):
@@ -984,7 +1264,7 @@ def render_time_series(df: pd.DataFrame):
     fig.update_layout(height=280, paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9",
                       legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"),
                       plot_bgcolor="rgba(255,255,255,0.05)")
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
 
 
 def render_stacked_time_series(df: pd.DataFrame, logs_df: pd.DataFrame):
@@ -1135,7 +1415,7 @@ def render_stacked_time_series(df: pd.DataFrame, logs_df: pd.DataFrame):
             showgrid=False,
         ),
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
     st.caption(t("10 saniyelik dilimlerde yığılmış sınıf hacmi, canlı güven eşiği ve engelleme işaretleri."))
 
 
@@ -1165,7 +1445,7 @@ def render_confidence_histogram(df: pd.DataFrame):
     fig.update_layout(showlegend=False, height=280,
                       paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9",
                       plot_bgcolor="rgba(255,255,255,0.05)")
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
 
 
 def render_protocol_port_heatmap(df: pd.DataFrame):
@@ -1252,7 +1532,7 @@ def render_protocol_port_heatmap(df: pd.DataFrame):
         xaxis=dict(title="Port", side="bottom"),
         yaxis=dict(title=t("Protokol")),
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
     if has_port_data:
         st.caption(t("Yoğunluk ölçeği, protokol ve porta göre akış yoğunluğunu gösterir. Eksik veya düşük frekanslı portlar `Diğer` altında toplanır."))
     else:
@@ -1521,14 +1801,14 @@ def render_batch_log_actions(selected_rows):
             t("Seçilileri Engelle"),
             key="batch_block_selected",
             disabled=not has_selection or not confirm,
-            use_container_width=True,
+            width="stretch",
         )
     with col_unblock:
         unblock_clicked = st.button(
             t("Seçililerin Engelini Kaldır"),
             key="batch_unblock_selected",
             disabled=not has_selection or not confirm,
-            use_container_width=True,
+            width="stretch",
         )
 
     if block_clicked:
@@ -1578,7 +1858,7 @@ def render_firewall_viewer():
         with cols[1]:
             st.caption(t("Yön: {d}").format(d=direction))
         with cols[2]:
-            if st.button(t("Engeli Kaldır"), key=f"firewall_unblock_{ip_address}", use_container_width=True):
+            if st.button(t("Engeli Kaldır"), key=f"firewall_unblock_{ip_address}", width="stretch"):
                 ok = unblock_ip(ip_address)
                 if ok:
                     st.session_state["firewall_viewer_toast"] = {
@@ -1739,7 +2019,7 @@ def render_xai_global_importance():
         xaxis=dict(title=t("Öncelik puanı (sıra tabanlı)"), gridcolor="rgba(255,255,255,0.08)"),
         yaxis=dict(title=None),
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
     st.caption(t(
         "Sıralama, eğitimde Random Forest önem puanları ve SHAP analizine göre seçilen 20 "
         "önceliklendirilmiş özniteliği yansıtır. Sayısal SHAP önemleri için SHAP açıklayıcı gerekir."
@@ -1793,7 +2073,7 @@ def render_xai_probability_breakdown(df: pd.DataFrame):
         yaxis=dict(title=t("Olasılık (%)"), range=[0, 100], gridcolor="rgba(255,255,255,0.08)"),
         xaxis=dict(title=None),
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
 
     pred_cls = tr_class(row.get("class_name", "?"))
     conf = pd.to_numeric(row.get("confidence_score"), errors="coerce")
@@ -1939,35 +2219,16 @@ def _config_metrics(model_key: str) -> dict:
 
 
 def parse_classification_report(rel_path: str) -> dict:
-    """Özel formatlı classification_report.txt -> normalize metrikler."""
-    import re
+    """Özel formatlı classification_report.txt -> normalize metrikler.
+
+    Dosyayı okur; saf ayrıştırma transforms.parse_classification_report_text'te.
+    """
     try:
         with open(os.path.join(PROJECT_ROOT, rel_path), "r", encoding="utf-8", errors="replace") as fp:
             text = fp.read()
     except Exception:
         return {}
-    res = {"source": "rapor", "per_class": {}}
-    m = re.search(r"Accuracy:\s*([\d.]+)", text)
-    if m:
-        res["accuracy"] = float(m.group(1))
-    mblock = re.search(r"Macro Average:(.*?)(?:Weighted Average:|Confusion Matrix:|=====|$)", text, re.S)
-    if mblock:
-        b = mblock.group(1)
-        for key, pat in [("macro_precision", r"Precision:\s*([\d.]+)"),
-                         ("macro_recall", r"Recall:\s*([\d.]+)"),
-                         ("macro_f1", r"F1-Score:\s*([\d.]+)")]:
-            mm = re.search(pat, b)
-            if mm:
-                res[key] = float(mm.group(1))
-    for cm in re.finditer(
-        r"([A-Za-z][\w ]*?) \(Class \d+\):\s*Precision:\s*([\d.]+).*?Recall:\s*([\d.]+).*?F1-Score:\s*([\d.]+)",
-        text, re.S,
-    ):
-        res["per_class"][cm.group(1).strip()] = {
-            "precision": float(cm.group(2)), "recall": float(cm.group(3)),
-            "f1": float(cm.group(4)), "roc_auc": None,
-        }
-    return res
+    return parse_classification_report_text(text)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -2034,7 +2295,7 @@ def render_perf_comparison_charts(df: pd.DataFrame):
                               plot_bgcolor="rgba(255,255,255,0.05)", coloraxis_showscale=False,
                               xaxis=dict(tickformat=".0%"), yaxis=dict(title=None),
                               margin=dict(l=10, r=10, t=40, b=10))
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
         else:
             st.info(t("Karşılaştırılacak F1 verisi yok."))
     with c2:
@@ -2047,7 +2308,7 @@ def render_perf_comparison_charts(df: pd.DataFrame):
             fig.update_layout(height=320, paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9",
                               plot_bgcolor="rgba(255,255,255,0.05)", yaxis=dict(tickformat=".0%"),
                               margin=dict(l=10, r=10, t=40, b=10))
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
         else:
             st.info(t("Hız/doğruluk dengesi için yeterli veri yok."))
 
@@ -2077,7 +2338,7 @@ def render_perf_model_detail(perf: dict, model_key: str):
                           yaxis=dict(tickformat=".0%", range=[0, 1]),
                           xaxis=dict(title=None), margin=dict(l=10, r=10, t=40, b=10),
                           legend=dict(orientation="h", y=-0.2, x=0.5, xanchor="center"))
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(_apply_chart_defaults(fig), width="stretch")
     else:
         st.info(t("Bu model için sınıf bazlı metrik dosyada bulunmuyor."))
 
@@ -2095,7 +2356,7 @@ def render_perf_model_detail(perf: dict, model_key: str):
 # ---------------------------------------------------------------------------
 # Yönetim & Yanıt yardımcıları (Sprint 4)
 # ---------------------------------------------------------------------------
-ESCALATION_WINDOW_VIEW = int(os.getenv("ESCALATION_WINDOW_SECONDS", "60"))
+ESCALATION_WINDOW_VIEW = ESCALATION_WINDOW_SECONDS  # config.py'den (merkezi)
 
 
 def save_model_threshold(value: float) -> bool:
@@ -2115,7 +2376,7 @@ def render_admin_threshold():
         t("Eşik (Canlı İzleme referans çizgisi)"), 0.0, 1.0, float(current), 0.01,
         key="admin_threshold_slider",
     )
-    if st.button(t("Eşiği Kaydet"), key="admin_save_threshold", use_container_width=True):
+    if st.button(t("Eşiği Kaydet"), key="admin_save_threshold", width="stretch"):
         if save_model_threshold(new_val):
             st.toast(t("Eşik kaydedildi: {v:.2f}").format(v=new_val))
         else:
@@ -2267,21 +2528,7 @@ live_mode = st.sidebar.toggle(t("⚡ Canlı Mod"), key="live_mode")
 refresh_interval = st.sidebar.slider(t("Aralık (saniye)"), 5, 60, key="refresh_interval", disabled=not live_mode)
 st.sidebar.markdown("---")
 
-# Sekmeler için veri çerçevelerini filtrele
-def filter_dataframe(df: pd.DataFrame, window: str) -> pd.DataFrame:
-    if df.empty or window == "Tüm Zamanlar": return df
-    c = "timestamp" if "timestamp" in df.columns else "Timestamp"
-    if c not in df.columns: return df
-    df = df.copy()  # girdiyi yerinde değiştirme (mutasyon hatası önlenir)
-    df[c] = pd.to_datetime(df[c], errors="coerce")
-    m_ts = df[c].max()
-    if pd.isna(m_ts): return df
-    if window == "Son 5 dk": cutoff = m_ts - pd.Timedelta(minutes=5)
-    elif window == "Son 1 saat": cutoff = m_ts - pd.Timedelta(hours=1)
-    elif window == "Son 24 saat": cutoff = m_ts - pd.Timedelta(hours=24)
-    else: return df
-    return df[df[c] >= cutoff].copy()
-
+# Sekmeler için veri çerçevelerini filtrele (filter_dataframe -> transforms.py)
 live_df = filter_dataframe(df_live_full, time_window)
 logs_df = filter_dataframe(df_logs_full, time_window)
 
@@ -2446,7 +2693,7 @@ with tab_logs:
                 data=csv_bytes,
                 file_name=f"olay_kayitlari_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
         with export_col_pdf:
             if pdf_bytes is None:
@@ -2454,7 +2701,7 @@ with tab_logs:
                     t("PDF Dışa Aktar"),
                     disabled=True,
                     help=t("PDF dışa aktarımı için `reportlab` paketini kurun."),
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.download_button(
@@ -2462,7 +2709,7 @@ with tab_logs:
                     data=pdf_bytes,
                     file_name=f"olay_raporu_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
                     mime="application/pdf",
-                    use_container_width=True,
+                    width="stretch",
                 )
         st.markdown("---")
         render_batch_log_actions(selected_rows)
