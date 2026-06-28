@@ -67,6 +67,16 @@ PARENT_DIR = os.path.dirname(CURRENT_DIR)
 PROJECT_ROOT = os.path.dirname(PARENT_DIR)
 if PARENT_DIR not in sys.path:
     sys.path.append(PARENT_DIR)
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
+# Saf veri-dönüşüm yardımcıları ayrı modülde (Streamlit'siz birim testi için)
+from transforms import (
+    calculate_avg_confidence,
+    filter_dataframe,
+    find_first_present_column,
+    parse_classification_report_text,
+)
 
 try:
     from utils.db_manager import fetch_logs, log_heartbeat, fetch_recent_events, get_service_health
@@ -630,24 +640,6 @@ def get_system_status() -> dict:
         "live_bridge_status": "active" if data_flowing else ("waiting" if csv_exists and csv_age < 120 else "stopped"),
         "csv_age": csv_age, "csv_exists": csv_exists, "csv_rows": csv_rows, "data_flowing": data_flowing,
     }
-
-
-def calculate_avg_confidence(df: pd.DataFrame) -> float:
-    if df.empty:
-        return 0.0
-    prob_cols = [c for c in df.columns if "prob" in c.lower()]
-    if prob_cols:
-        return df[prob_cols].apply(pd.to_numeric, errors="coerce").max(axis=1).mean()
-    if "confidence_score" in df.columns:
-        return pd.to_numeric(df["confidence_score"], errors="coerce").mean()
-    return 0.0
-
-
-def find_first_present_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
-    for candidate in candidates:
-        if candidate in df.columns:
-            return candidate
-    return None
 
 
 def format_protocol_label(value) -> str:
@@ -1939,35 +1931,16 @@ def _config_metrics(model_key: str) -> dict:
 
 
 def parse_classification_report(rel_path: str) -> dict:
-    """Özel formatlı classification_report.txt -> normalize metrikler."""
-    import re
+    """Özel formatlı classification_report.txt -> normalize metrikler.
+
+    Dosyayı okur; saf ayrıştırma transforms.parse_classification_report_text'te.
+    """
     try:
         with open(os.path.join(PROJECT_ROOT, rel_path), "r", encoding="utf-8", errors="replace") as fp:
             text = fp.read()
     except Exception:
         return {}
-    res = {"source": "rapor", "per_class": {}}
-    m = re.search(r"Accuracy:\s*([\d.]+)", text)
-    if m:
-        res["accuracy"] = float(m.group(1))
-    mblock = re.search(r"Macro Average:(.*?)(?:Weighted Average:|Confusion Matrix:|=====|$)", text, re.S)
-    if mblock:
-        b = mblock.group(1)
-        for key, pat in [("macro_precision", r"Precision:\s*([\d.]+)"),
-                         ("macro_recall", r"Recall:\s*([\d.]+)"),
-                         ("macro_f1", r"F1-Score:\s*([\d.]+)")]:
-            mm = re.search(pat, b)
-            if mm:
-                res[key] = float(mm.group(1))
-    for cm in re.finditer(
-        r"([A-Za-z][\w ]*?) \(Class \d+\):\s*Precision:\s*([\d.]+).*?Recall:\s*([\d.]+).*?F1-Score:\s*([\d.]+)",
-        text, re.S,
-    ):
-        res["per_class"][cm.group(1).strip()] = {
-            "precision": float(cm.group(2)), "recall": float(cm.group(3)),
-            "f1": float(cm.group(4)), "roc_auc": None,
-        }
-    return res
+    return parse_classification_report_text(text)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -2267,21 +2240,7 @@ live_mode = st.sidebar.toggle(t("⚡ Canlı Mod"), key="live_mode")
 refresh_interval = st.sidebar.slider(t("Aralık (saniye)"), 5, 60, key="refresh_interval", disabled=not live_mode)
 st.sidebar.markdown("---")
 
-# Sekmeler için veri çerçevelerini filtrele
-def filter_dataframe(df: pd.DataFrame, window: str) -> pd.DataFrame:
-    if df.empty or window == "Tüm Zamanlar": return df
-    c = "timestamp" if "timestamp" in df.columns else "Timestamp"
-    if c not in df.columns: return df
-    df = df.copy()  # girdiyi yerinde değiştirme (mutasyon hatası önlenir)
-    df[c] = pd.to_datetime(df[c], errors="coerce")
-    m_ts = df[c].max()
-    if pd.isna(m_ts): return df
-    if window == "Son 5 dk": cutoff = m_ts - pd.Timedelta(minutes=5)
-    elif window == "Son 1 saat": cutoff = m_ts - pd.Timedelta(hours=1)
-    elif window == "Son 24 saat": cutoff = m_ts - pd.Timedelta(hours=24)
-    else: return df
-    return df[df[c] >= cutoff].copy()
-
+# Sekmeler için veri çerçevelerini filtrele (filter_dataframe -> transforms.py)
 live_df = filter_dataframe(df_live_full, time_window)
 logs_df = filter_dataframe(df_logs_full, time_window)
 
